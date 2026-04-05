@@ -4,14 +4,6 @@
 
 #include "db/db_impl.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
-#include <set>
-#include <string>
-#include <vector>
-
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
@@ -22,11 +14,20 @@
 #include "db/table_cache.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <set>
+#include <string>
+#include <vector>
+
 #include "leveldb/db.h"
 #include "leveldb/env.h"
 #include "leveldb/status.h"
 #include "leveldb/table.h"
 #include "leveldb/table_builder.h"
+
 #include "port/port.h"
 #include "table/block.h"
 #include "table/merger.h"
@@ -1175,6 +1176,29 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
                                   ->sequence_number()
                             : latest_snapshot),
                        seed);
+}
+
+Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
+                    const Slice& end_key,
+                    std::vector<std::pair<std::string, std::string>>* result) {
+  result->clear();
+
+  if (start_key.compare(end_key) >= 0) {
+    return Status::OK();
+  }
+
+  Iterator* it = this->NewIterator(options);
+  it->Seek(start_key);
+
+  while (it->Valid() && it->key().compare(end_key) < 0) {
+    result->emplace_back(it->key().ToString(), it->value().ToString());
+    it->Next();
+  }
+  Status status = it->status();
+
+  delete it;
+
+  return status;
 }
 
 void DBImpl::RecordReadSample(Slice key) {
