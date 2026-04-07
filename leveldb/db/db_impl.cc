@@ -1201,29 +1201,29 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   return status;
 }
 
-Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
-                           const Slice& end_key) {
-  if (start_key.compare(end_key) >= 0) {
-    return Status::OK();
-  }
+// Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
+//                            const Slice& end_key) {
+//   if (start_key.compare(end_key) >= 0) {
+//     return Status::OK();
+//   }
 
-  ReadOptions read_options;
-  Iterator* it = NewIterator(read_options);
-  WriteBatch batch;
-  for (it->Seek(start_key); it->Valid() && it->key().compare(end_key) < 0;
-       it->Next()) {
-    batch.Delete(it->key());
-  }
+//   ReadOptions read_options;
+//   Iterator* it = NewIterator(read_options);
+//   WriteBatch batch;
+//   for (it->Seek(start_key); it->Valid() && it->key().compare(end_key) < 0;
+//        it->Next()) {
+//     batch.Delete(it->key());
+//   }
 
-  Status status = it->status();
-  delete it;
+//   Status status = it->status();
+//   delete it;
 
-  if (status.ok()) {
-    status = Write(options, &batch);
-  }
+//   if (status.ok()) {
+//     status = Write(options, &batch);
+//   }
 
-  return status;
-}
+//   return status;
+// }
 
 void DBImpl::RecordReadSample(Slice key) {
   MutexLock l(&mutex_);
