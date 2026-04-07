@@ -2125,6 +2125,16 @@ class ModelDB : public DB {
     assert(false);  // Not implemented
     return Status::NotFound(key);
   }
+  Status Scan(const ReadOptions& options, const Slice& start_key,
+              const Slice& end_key,
+              std::vector<std::pair<std::string, std::string>>* result) override {
+    result->clear();
+    for (auto it = map_.lower_bound(start_key.ToString());
+         it != map_.end() && it->first < end_key.ToString(); ++it) {
+      result->push_back(*it);
+    }
+    return Status::OK();
+  }
   Iterator* NewIterator(const ReadOptions& options) override {
     if (options.snapshot == nullptr) {
       KVMap* saved = new KVMap;
