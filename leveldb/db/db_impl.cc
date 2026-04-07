@@ -1201,7 +1201,8 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   return status;
 }
 
-// Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
+// Status DBImpl::DeleteRange(const WriteOptions& options, const Slice&
+// start_key,
 //                            const Slice& end_key) {
 //   if (start_key.compare(end_key) >= 0) {
 //     return Status::OK();
