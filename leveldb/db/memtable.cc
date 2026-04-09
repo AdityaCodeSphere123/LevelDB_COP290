@@ -97,6 +97,10 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
   std::memcpy(p, value.data(), val_size);
   assert(p + val_size == buf + encoded_len);
   table_.Insert(buf);
+
+  if (type == kTypeRangeDeletion) {
+    range_deletions_.push_back({key.ToString(), value.ToString(), s});
+  }
 }
 
 bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
@@ -129,7 +133,19 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
         case kTypeDeletion:
           *s = Status::NotFound(Slice());
           return true;
+        case kTypeRangeDeletion:
+          *s = Status::NotFound(Slice());
+          return true;
       }
+    }
+  }
+  for (const auto& rd : range_deletions_) {
+    if (comparator_.comparator.user_comparator()->Compare(key.user_key(), rd.start) >= 0 &&
+        comparator_.comparator.user_comparator()->Compare(key.user_key(), rd.end) < 0 &&
+        key.internal_key().size() >= 8 &&
+        (DecodeFixed64(key.internal_key().data() + key.internal_key().size() - 8) >> 8) < rd.seq) {
+      *s = Status::NotFound(Slice());
+      return true;
     }
   }
   return false;
