@@ -7,7 +7,6 @@
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
-#include "db/delete_range.h"
 #include "db/filename.h"
 #include "db/log_reader.h"
 #include "db/log_writer.h"
@@ -917,8 +916,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
 
-  std::vector<DeleteRanges> active_range_deletions;
-
   // Release mutex while we're actually doing the compaction work
   mutex_.Unlock();
 
@@ -982,24 +979,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         //     few iterations of this loop (by rule (A) above).
         // Therefore this deletion marker is obsolete and can be dropped.
         drop = true;
-      }
-
-      if (!drop) {
-        for (auto it = active_range_deletions.begin(); it != active_range_deletions.end(); ) {
-          if (user_comparator()->Compare(ikey.user_key, it->end) >= 0) {
-            it = active_range_deletions.erase(it);
-          } else {
-            if (user_comparator()->Compare(ikey.user_key, it->start) >= 0 &&
-                ikey.sequence < it->seq) {
-              drop = true;
-            }
-            ++it;
-          }
-        }
-      }
-
-      if (ikey.type == kTypeRangeDeletion) {
-        active_range_deletions.push_back({ikey.user_key.ToString(), input->value().ToString(), ikey.sequence});
       }
 
       last_sequence_for_key = ikey.sequence;
@@ -1222,12 +1201,6 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   return status;
 }
 
-Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
-                           const Slice& end_key) {
-  WriteBatch batch;
-  batch.DeleteRange(start_key, end_key);
-  return Write(options, &batch);
-}
 void DBImpl::RecordReadSample(Slice key) {
   MutexLock l(&mutex_);
   if (versions_->current()->RecordReadSample(key)) {

@@ -114,10 +114,6 @@ class Version {
   // Return a human readable string that describes this version's contents.
   std::string DebugString() const;
 
-  const std::vector<RangeDeletion>& range_deletions() const {
-    return range_deletions_;
-  }
-
  private:
   friend class Compaction;
   friend class VersionSet;
@@ -166,7 +162,6 @@ class Version {
   // are initialized by Finalize().
   double compaction_score_;
   int compaction_level_;
-  std::vector<RangeDeletion> range_deletions_;
 };
 
 class VersionSet {

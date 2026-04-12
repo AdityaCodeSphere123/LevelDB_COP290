@@ -4,6 +4,8 @@
 
 #include "db/version_set.h"
 
+#include <algorithm>
+#include <cstdio>
 
 #include "db/filename.h"
 #include "db/log_reader.h"

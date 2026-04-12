@@ -6,12 +6,9 @@
 
 #include "db/db_impl.h"
 #include "db/dbformat.h"
-#include "db/delete_range.h"
 #include "db/filename.h"
-
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
-
 #include "port/port.h"
 #include "util/logging.h"
 #include "util/mutexlock.h"
@@ -120,7 +117,6 @@ class DBIter : public Iterator {
   bool valid_;
   Random rnd_;
   size_t bytes_until_read_sampling_;
-  std::vector<DeleteRanges> active_range_deletions_;
 };
 
 inline bool DBIter::ParseKey(ParsedInternalKey* ikey) {
@@ -197,28 +193,10 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
               user_comparator_->Compare(ikey.user_key, *skip) <= 0) {
             // Entry hidden
           } else {
-            bool covered = false;
-            for (auto it = active_range_deletions_.begin(); it != active_range_deletions_.end(); ) {
-              if (user_comparator_->Compare(ikey.user_key, it->end) >= 0) {
-                it = active_range_deletions_.erase(it);
-              } else {
-                if (user_comparator_->Compare(ikey.user_key, it->start) >= 0 &&
-                    ikey.sequence < it->seq) {
-                  covered = true;
-                  break;
-                }
-                ++it;
-              }
-            }
-            if (!covered) {
-              valid_ = true;
-              saved_key_.clear();
-              return;
-            }
+            valid_ = true;
+            saved_key_.clear();
+            return;
           }
-          break;
-        case kTypeRangeDeletion:
-          active_range_deletions_.push_back({ikey.user_key.ToString(), iter_->value().ToString(), ikey.sequence});
           break;
       }
     }

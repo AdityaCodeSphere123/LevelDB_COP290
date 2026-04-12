@@ -2135,13 +2135,6 @@ class ModelDB : public DB {
     }
     return Status::OK();
   }
-  // Status DeleteRange(const WriteOptions& options, const Slice& start_key,
-  //                    const Slice& end_key) override {
-  //   auto it_start = map_.lower_bound(start_key.ToString());
-  //   auto it_end = map_.lower_bound(end_key.ToString());
-  //   map_.erase(it_start, it_end);
-  //   return Status::OK();
-  // }
   Iterator* NewIterator(const ReadOptions& options) override {
     if (options.snapshot == nullptr) {
       KVMap* saved = new KVMap;

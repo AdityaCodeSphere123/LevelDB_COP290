@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "db/dbformat.h"
-#include "db/range_deletion.h"
 
 namespace leveldb {
 
@@ -76,14 +75,6 @@ class VersionEdit {
     deleted_files_.insert(std::make_pair(level, file));
   }
 
-  void AddRangeDeletion(const Slice& start, const Slice& end, SequenceNumber seq) {
-    RangeDeletion rd;
-    rd.start = start.ToString();
-    rd.end = end.ToString();
-    rd.seq = seq;
-    range_deletions_.push_back(rd);
-  }
-
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(const Slice& src);
 
@@ -108,7 +99,6 @@ class VersionEdit {
   std::vector<std::pair<int, InternalKey>> compact_pointers_;
   DeletedFileSet deleted_files_;
   std::vector<std::pair<int, FileMetaData>> new_files_;
-  std::vector<RangeDeletion> range_deletions_;
 };
 
 }  // namespace leveldb

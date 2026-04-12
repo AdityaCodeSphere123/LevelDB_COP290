@@ -24,4 +24,3 @@ Iterator* NewDBIterator(DBImpl* db, const Comparator* user_key_comparator,
 }  // namespace leveldb
 
 #endif  // STORAGE_LEVELDB_DB_DB_ITER_H_
-

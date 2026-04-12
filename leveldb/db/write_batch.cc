@@ -18,9 +18,7 @@
 #include "db/dbformat.h"
 #include "db/memtable.h"
 #include "db/write_batch_internal.h"
-
 #include "leveldb/db.h"
-
 #include "util/coding.h"
 
 namespace leveldb {
@@ -70,14 +68,6 @@ Status WriteBatch::Iterate(Handler* handler) const {
           return Status::Corruption("bad WriteBatch Delete");
         }
         break;
-      case kTypeRangeDeletion:
-        if (GetLengthPrefixedSlice(&input, &key) &&
-            GetLengthPrefixedSlice(&input, &value)) {
-          handler->DeleteRange(key, value);
-        } else {
-          return Status::Corruption("bad WriteBatch DeleteRange");
-        }
-        break;
       default:
         return Status::Corruption("unknown WriteBatch tag");
     }
@@ -118,13 +108,6 @@ void WriteBatch::Delete(const Slice& key) {
   PutLengthPrefixedSlice(&rep_, key);
 }
 
-void WriteBatch::DeleteRange(const Slice& start_key, const Slice& end_key) {
-  WriteBatchInternal::SetCount(this, WriteBatchInternal::Count(this) + 1);
-  rep_.push_back(static_cast<char>(kTypeRangeDeletion));
-  PutLengthPrefixedSlice(&rep_, start_key);
-  PutLengthPrefixedSlice(&rep_, end_key);
-}
-
 void WriteBatch::Append(const WriteBatch& source) {
   WriteBatchInternal::Append(this, &source);
 }
@@ -141,10 +124,6 @@ class MemTableInserter : public WriteBatch::Handler {
   }
   void Delete(const Slice& key) override {
     mem_->Add(sequence_, kTypeDeletion, key, Slice());
-    sequence_++;
-  }
-  void DeleteRange(const Slice& key, const Slice& value) override {
-    mem_->Add(sequence_, kTypeRangeDeletion, key, value);
     sequence_++;
   }
 };

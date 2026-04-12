@@ -8,9 +8,7 @@
 #include <string>
 
 #include "db/dbformat.h"
-#include "db/delete_range.h"
 #include "db/skiplist.h"
-#include <vector>
 #include "leveldb/db.h"
 #include "util/arena.h"
 
@@ -82,7 +80,6 @@ class MemTable {
   int refs_;
   Arena arena_;
   Table table_;
-  std::vector<DeleteRanges> range_deletions_;
 };
 
 }  // namespace leveldb
