@@ -640,7 +640,10 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
-
+Status DBImpl::ForceFullCompaction() {
+  CompactRange(nullptr, nullptr);
+  return Status::OK();
+}
 Status DBImpl::TEST_CompactMemTable() {
   // nullptr batch means just wait for earlier writes to be done
   Status s = Write(WriteOptions(), nullptr);
