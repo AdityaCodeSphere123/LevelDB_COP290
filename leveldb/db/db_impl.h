@@ -52,6 +52,7 @@ class DBImpl : public DB {
   bool GetProperty(const Slice& property, std::string* value) override;
   void GetApproximateSizes(const Range* range, int n, uint64_t* sizes) override;
   void CompactRange(const Slice* begin, const Slice* end) override;
+  Status ForceFullCompaction() override;
 
   // Extra methods (for testing) that are not in the public DB interface
 

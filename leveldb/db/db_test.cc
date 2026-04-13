@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cinttypes>
 #include <string>
-
 #include "gtest/gtest.h"
 #include "db/db_impl.h"
 #include "db/filename.h"
@@ -2125,9 +2124,9 @@ class ModelDB : public DB {
     assert(false);  // Not implemented
     return Status::NotFound(key);
   }
-  Status Scan(const ReadOptions& options, const Slice& start_key,
-              const Slice& end_key,
-              std::vector<std::pair<std::string, std::string>>* result) override {
+  Status Scan(
+      const ReadOptions& options, const Slice& start_key, const Slice& end_key,
+      std::vector<std::pair<std::string, std::string>>* result) override {
     result->clear();
     for (auto it = map_.lower_bound(start_key.ToString());
          it != map_.end() && it->first < end_key.ToString(); ++it) {
@@ -2178,6 +2177,7 @@ class ModelDB : public DB {
     }
   }
   void CompactRange(const Slice* start, const Slice* end) override {}
+  Status ForceFullCompaction() override { return Status::OK(); }
 
  private:
   class ModelIter : public Iterator {
