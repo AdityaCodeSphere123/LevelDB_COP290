@@ -173,7 +173,7 @@ class LEVELDB_EXPORT DB {
   //    db->CompactRange(nullptr, nullptr);
   virtual void CompactRange(const Slice* begin, const Slice* end) = 0;
 
-  virtual Status ForceFullCompaction() = 0;
+  virtual Status ForceFullCompaction(FullCompactionStats* stats = nullptr)=0;
 };
 
 // Destroy the contents of the specified database.

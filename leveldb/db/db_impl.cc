@@ -640,7 +640,7 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
-Status DBImpl::ForceFullCompaction() {
+Status DBImpl::ForceFullCompaction(FullCompactionStats* stats) {
   CompactRange(nullptr, nullptr);
   return Status::OK();
 }

@@ -12,10 +12,10 @@
 #include <deque>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "leveldb/db.h"
 #include "leveldb/env.h"
-
 #include "port/port.h"
 #include "port/thread_annotations.h"
 
@@ -52,7 +52,7 @@ class DBImpl : public DB {
   bool GetProperty(const Slice& property, std::string* value) override;
   void GetApproximateSizes(const Range* range, int n, uint64_t* sizes) override;
   void CompactRange(const Slice* begin, const Slice* end) override;
-  Status ForceFullCompaction() override;
+  Status ForceFullCompaction(FullCompactionStats* stats = nullptr) override;
 
   // Extra methods (for testing) that are not in the public DB interface
 
@@ -88,6 +88,16 @@ class DBImpl : public DB {
     const InternalKey* begin;  // null means beginning of key range
     const InternalKey* end;    // null means end of key range
     InternalKey tmp_storage;   // Used to keep track of compaction progress
+  };
+
+  // Stats accumulated for a single compaction event (one level, one round).
+  struct SingleCompactionRecord {
+    SingleCompactionRecord()
+        : input_files(0), output_files(0), bytes_read(0), bytes_written(0) {}
+    int input_files;
+    int output_files;
+    int64_t bytes_read;
+    int64_t bytes_written;
   };
 
   // Per level compaction stats.  stats_[level] stores the stats for
@@ -156,6 +166,11 @@ class DBImpl : public DB {
   Status InstallCompactionResults(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
+  Status FlushMemTableSync();
+  void CompactLevelFull(int level,
+                        std::vector<SingleCompactionRecord>* records)
+      LOCKS_EXCLUDED(mutex_);
+
   const Comparator* user_comparator() const {
     return internal_comparator_.user_comparator();
   }
@@ -208,6 +223,8 @@ class DBImpl : public DB {
   Status bg_error_ GUARDED_BY(mutex_);
 
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
+
+  std::vector<SingleCompactionRecord>* ffc_records_ GUARDED_BY(mutex_);
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

@@ -2177,7 +2177,9 @@ class ModelDB : public DB {
     }
   }
   void CompactRange(const Slice* start, const Slice* end) override {}
-  Status ForceFullCompaction() override { return Status::OK(); }
+  Status ForceFullCompaction(FullCompactionStats* stats = nullptr) override {
+    return Status::OK();
+  }
 
  private:
   class ModelIter : public Iterator {
