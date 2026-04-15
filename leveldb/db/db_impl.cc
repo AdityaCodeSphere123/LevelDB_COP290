@@ -517,7 +517,8 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   Status s;
   {
     mutex_.Unlock();
-    s = BuildTable(dbname_, env_, options_, table_cache_, iter, &meta);
+    Status s = BuildTable(dbname_, env_, options_, table_cache_, iter,
+                          &mem->GetRangeDeletions(), meta);
     mutex_.Lock();
   }
 
@@ -1199,6 +1200,13 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   delete it;
 
   return status;
+}
+
+Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
+                           const Slice& end_key) {
+  WriteBatch batch;
+  batch.DeleteRange(start_key, end_key);
+  return Write(options, &batch);
 }
 
 void DBImpl::RecordReadSample(Slice key) {

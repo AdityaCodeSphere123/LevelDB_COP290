@@ -4,12 +4,14 @@
 
 #include "leveldb/table_builder.h"
 
+#include "db/dbformat.h"
 #include <cassert>
 
 #include "leveldb/comparator.h"
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/options.h"
+
 #include "table/block_builder.h"
 #include "table/filter_block.h"
 #include "table/format.h"
@@ -26,6 +28,7 @@ struct TableBuilder::Rep {
         offset(0),
         data_block(&options),
         index_block(&index_block_options),
+        range_del_block(&options),
         num_entries(0),
         closed(false),
         filter_block(opt.filter_policy == nullptr
@@ -42,6 +45,7 @@ struct TableBuilder::Rep {
   Status status;
   BlockBuilder data_block;
   BlockBuilder index_block;
+  BlockBuilder range_del_block;
   std::string last_key;
   int64_t num_entries;
   bool closed;  // Either Finish() or Abandon() has been called.
@@ -120,6 +124,20 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
   if (estimated_block_size >= r->options.block_size) {
     Flush();
   }
+}
+
+void TableBuilder::AddRangeDeletion(uint64_t seq, const Slice& start_key,
+                                    const Slice& end_key) {
+  Rep* r = rep_;
+  assert(!r->closed);
+  if (!ok()) return;
+
+  std::string internal_start;
+  AppendInternalKey(&internal_start,
+                    ParsedInternalKey(start_key, seq, kTypeRangeDeletion));
+
+  // Store the formatted start key and the raw end key in the block
+  r->range_del_block.Add(internal_start, end_key);
 }
 
 void TableBuilder::Flush() {
@@ -217,11 +235,16 @@ Status TableBuilder::Finish() {
   r->closed = true;
 
   BlockHandle filter_block_handle, metaindex_block_handle, index_block_handle;
+  BlockHandle range_del_block_handle;
 
   // Write filter block
   if (ok() && r->filter_block != nullptr) {
     WriteRawBlock(r->filter_block->Finish(), kNoCompression,
                   &filter_block_handle);
+  }
+
+  if (ok() && !r->range_del_block.empty()) {
+    WriteBlock(&r->range_del_block, &range_del_block_handle);
   }
 
   // Write metaindex block
@@ -234,6 +257,12 @@ Status TableBuilder::Finish() {
       std::string handle_encoding;
       filter_block_handle.EncodeTo(&handle_encoding);
       meta_index_block.Add(key, handle_encoding);
+    }
+
+    if (!r->range_del_block.empty()) {
+      std::string handle_encoding;
+      range_del_block_handle.EncodeTo(&handle_encoding);
+      meta_index_block.Add("leveldb.range_del", handle_encoding);
     }
 
     // TODO(postrelease): Add stats and other meta blocks

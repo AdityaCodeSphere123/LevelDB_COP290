@@ -8,6 +8,7 @@
 #include "db/filename.h"
 #include "db/table_cache.h"
 #include "db/version_edit.h"
+
 #include "leveldb/db.h"
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
@@ -15,7 +16,9 @@
 namespace leveldb {
 
 Status BuildTable(const std::string& dbname, Env* env, const Options& options,
-                  TableCache* table_cache, Iterator* iter, FileMetaData* meta) {
+                  TableCache* table_cache, Iterator* iter,
+                  const std::vector<MemTable::RangeDeletion>* range_dels,
+                  FileMetaData* meta) {
   Status s;
   meta->file_size = 0;
   iter->SeekToFirst();
@@ -35,6 +38,13 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options,
       key = iter->key();
       builder->Add(key, iter->value());
     }
+
+    if (range_dels != nullptr) {
+      for (const auto& del : *range_dels) {
+        builder->AddRangeDeletion(del.seq, del.start_key, del.end_key);
+      }
+    }
+
     if (!key.empty()) {
       meta->largest.DecodeFrom(key);
     }

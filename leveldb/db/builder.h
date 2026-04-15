@@ -5,6 +5,9 @@
 #ifndef STORAGE_LEVELDB_DB_BUILDER_H_
 #define STORAGE_LEVELDB_DB_BUILDER_H_
 
+#include "db/memtable.h"
+#include <vector>
+
 #include "leveldb/status.h"
 
 namespace leveldb {
@@ -23,7 +26,9 @@ class VersionEdit;
 // If no data is present in *iter, meta->file_size will be set to
 // zero, and no Table file will be produced.
 Status BuildTable(const std::string& dbname, Env* env, const Options& options,
-                  TableCache* table_cache, Iterator* iter, FileMetaData* meta);
+                  TableCache* table_cache, Iterator* iter,
+                  const std::vector<MemTable::RangeDeletion>* range_dels,
+                  FileMetaData* meta);
 
 }  // namespace leveldb
 
