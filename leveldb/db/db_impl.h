@@ -167,9 +167,7 @@ class DBImpl : public DB {
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   Status FlushMemTableSync();
-  void CompactLevelFull(int level,
-                        std::vector<SingleCompactionRecord>* records)
-      LOCKS_EXCLUDED(mutex_);
+  Status CompactLevelFull(int level) LOCKS_EXCLUDED(mutex_);
 
   const Comparator* user_comparator() const {
     return internal_comparator_.user_comparator();
