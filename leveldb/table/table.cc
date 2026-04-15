@@ -9,6 +9,7 @@
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/options.h"
+
 #include "table/block.h"
 #include "table/filter_block.h"
 #include "table/format.h"
@@ -22,6 +23,7 @@ struct Table::Rep {
     delete filter;
     delete[] filter_data;
     delete index_block;
+    delete range_del_block;
   }
 
   Options options;
@@ -33,6 +35,8 @@ struct Table::Rep {
 
   BlockHandle metaindex_handle;  // Handle to metaindex_block: saved from footer
   Block* index_block;
+
+  Block* range_del_block = nullptr;
 };
 
 Status Table::Open(const Options& options, RandomAccessFile* file,
@@ -80,12 +84,6 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
 }
 
 void Table::ReadMeta(const Footer& footer) {
-  if (rep_->options.filter_policy == nullptr) {
-    return;  // Do not need any metadata
-  }
-
-  // TODO(sanjay): Skip this if footer.metaindex_handle() size indicates
-  // it is an empty block.
   ReadOptions opt;
   if (rep_->options.paranoid_checks) {
     opt.verify_checksums = true;
@@ -98,11 +96,27 @@ void Table::ReadMeta(const Footer& footer) {
   Block* meta = new Block(contents);
 
   Iterator* iter = meta->NewIterator(BytewiseComparator());
-  std::string key = "filter.";
-  key.append(rep_->options.filter_policy->Name());
-  iter->Seek(key);
-  if (iter->Valid() && iter->key() == Slice(key)) {
-    ReadFilter(iter->value());
+
+  // MINIMAL FIX: Wrapped in this IF statement
+  if (rep_->options.filter_policy != nullptr) {
+    std::string key = "filter.";
+    key.append(rep_->options.filter_policy->Name());
+    iter->Seek(key);
+    if (iter->Valid() && iter->key() == Slice(key)) {
+      ReadFilter(iter->value());
+    }
+  }
+
+  iter->Seek("leveldb.range_del");
+  if (iter->Valid() && iter->key() == Slice("leveldb.range_del")) {
+    BlockHandle range_del_handle;
+    Slice v = iter->value();
+    if (range_del_handle.DecodeFrom(&v).ok()) {
+      BlockContents range_contents;
+      if (ReadBlock(rep_->file, opt, range_del_handle, &range_contents).ok()) {
+        rep_->range_del_block = new Block(range_contents);
+      }
+    }
   }
   delete iter;
   delete meta;
@@ -228,7 +242,50 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
       Iterator* block_iter = BlockReader(this, options, iiter->value());
       block_iter->Seek(k);
       if (block_iter->Valid()) {
-        (*handle_result)(arg, block_iter->key(), block_iter->value());
+        ParsedInternalKey parsed_key;
+        if (ParseInternalKey(block_iter->key(), &parsed_key)) {
+          // Check against our range tombstones
+          if (rep_->range_del_block != nullptr) {
+            bool masked = false;
+            Iterator* range_iter =
+                rep_->range_del_block->NewIterator(rep_->options.comparator);
+
+            for (range_iter->SeekToFirst(); range_iter->Valid();
+                 range_iter->Next()) {
+              ParsedInternalKey tombstone_start;
+              if (ParseInternalKey(range_iter->key(), &tombstone_start)) {
+                // If tombstone covers key AND is newer...
+                if (rep_->options.comparator->Compare(
+                        tombstone_start.user_key, parsed_key.user_key) <= 0 &&
+                    rep_->options.comparator->Compare(
+                        parsed_key.user_key, range_iter->value()) < 0) {
+                  if (tombstone_start.sequence > parsed_key.sequence) {
+                    // Trick LevelDB: Feed it a faked deletion marker
+                    std::string fake_del;
+                    AppendInternalKey(
+                        &fake_del, ParsedInternalKey(parsed_key.user_key,
+                                                     tombstone_start.sequence,
+                                                     kTypeDeletion));
+                    (*handle_result)(arg, fake_del, Slice());
+                    masked = true;
+                    break;
+                  }
+                }
+              }
+            }
+            delete range_iter;
+
+            if (masked) {
+              s = block_iter->status();
+              delete block_iter;
+              delete iiter;
+              return s;
+            }
+          }
+
+          // Not masked by a tombstone, process normally
+          (*handle_result)(arg, block_iter->key(), block_iter->value());
+        }
       }
       s = block_iter->status();
       delete block_iter;
@@ -266,6 +323,13 @@ uint64_t Table::ApproximateOffsetOf(const Slice& key) const {
   }
   delete index_iter;
   return result;
+}
+
+Iterator* Table::NewRangeTombstoneIterator(const ReadOptions& options) const {
+  if (rep_->range_del_block == nullptr) {
+    return NewEmptyIterator();
+  }
+  return rep_->range_del_block->NewIterator(rep_->options.comparator);
 }
 
 }  // namespace leveldb
