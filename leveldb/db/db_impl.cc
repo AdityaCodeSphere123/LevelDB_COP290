@@ -148,7 +148,8 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       background_compaction_scheduled_(false),
       manual_compaction_(nullptr),
       versions_(new VersionSet(dbname_, &options_, table_cache_,
-                               &internal_comparator_)) {}
+                               &internal_comparator_)),
+      ffc_records_(nullptr) {}
 
 DBImpl::~DBImpl() {
   // Wait for background work to finish.
@@ -1048,6 +1049,18 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   mutex_.Lock();
   stats_[compact->compaction->level() + 1].Add(stats);
+
+  // If a ForceFullCompaction is in progress, record per-compaction details.
+  if (ffc_records_ != nullptr) {
+    SingleCompactionRecord rec;
+    for (int which = 0; which < 2; which++) {
+      rec.input_files += compact->compaction->num_input_files(which);
+    }
+    rec.output_files = static_cast<int>(compact->outputs.size());
+    rec.bytes_read = stats.bytes_read;
+    rec.bytes_written = stats.bytes_written;
+    ffc_records_->push_back(rec);
+  }
 
   if (status.ok()) {
     status = InstallCompactionResults(compact);

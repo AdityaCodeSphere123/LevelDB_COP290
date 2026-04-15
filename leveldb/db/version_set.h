@@ -111,6 +111,10 @@ class Version {
 
   int NumFiles(int level) const { return files_[level].size(); }
 
+  const std::vector<FileMetaData*>& files_at_level(int level) const {
+    return files_[level];
+  }
+
   // Return a human readable string that describes this version's contents.
   std::string DebugString() const;
 
