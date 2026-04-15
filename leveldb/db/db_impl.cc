@@ -84,6 +84,8 @@ struct DBImpl::CompactionState {
   TableBuilder* builder;
 
   uint64_t total_bytes;
+
+  std::vector<MemTable::RangeDeletion> tombstones;
 };
 
 // Fix user-supplied options to be reasonable
@@ -826,6 +828,10 @@ Status DBImpl::OpenCompactionOutputFile(CompactionState* compact) {
   Status s = env_->NewWritableFile(fname, &compact->outfile);
   if (s.ok()) {
     compact->builder = new TableBuilder(options_, compact->outfile);
+
+    for (const auto& del : compact->tombstones) {
+      compact->builder->AddRangeDeletion(del.seq, del.start_key, del.end_key);
+    }
   }
   return s;
 }
@@ -915,6 +921,25 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
 
+  for (int which = 0; which < 2; which++) {
+    for (int i = 0; i < compact->compaction->num_input_files(which); i++) {
+      FileMetaData* f = compact->compaction->input(which, i);
+      Iterator* r_iter = table_cache_->NewRangeTombstoneIterator(
+          ReadOptions(), f->number, f->file_size);
+      for (r_iter->SeekToFirst(); r_iter->Valid(); r_iter->Next()) {
+        ParsedInternalKey parsed_start;
+        if (ParseInternalKey(r_iter->key(), &parsed_start)) {
+          MemTable::RangeDeletion del;
+          del.start_key = parsed_start.user_key.ToString();
+          del.end_key = r_iter->value().ToString();
+          del.seq = parsed_start.sequence;
+          compact->tombstones.push_back(del);
+        }
+      }
+      delete r_iter;
+    }
+  }
+
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
 
   // Release mutex while we're actually doing the compaction work
@@ -964,6 +989,17 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
         has_current_user_key = true;
         last_sequence_for_key = kMaxSequenceNumber;
+      }
+
+      for (const auto& del : compact->tombstones) {
+        if (user_comparator()->Compare(ikey.user_key, del.start_key) >= 0 &&
+            user_comparator()->Compare(ikey.user_key, del.end_key) < 0) {
+          // Only drop it if the tombstone is newer than the key
+          if (del.seq > ikey.sequence) {
+            drop = true;
+            break;
+          }
+        }
       }
 
       if (last_sequence_for_key <= compact->smallest_snapshot) {
