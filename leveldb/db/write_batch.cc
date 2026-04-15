@@ -147,7 +147,7 @@ class MemTableInserter : public WriteBatch::Handler {
     sequence_++;
   }
   void DeleteRange(const Slice& start_key, const Slice& end_key) override {
-    mem_->AddRangeTombstone(sequence_, start_key, end_key);
+    mem_->AddRangeDeletion(sequence_, start_key, end_key);
     sequence_++;
   }
 };

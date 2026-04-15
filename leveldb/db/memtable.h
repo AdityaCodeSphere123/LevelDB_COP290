@@ -5,11 +5,13 @@
 #ifndef STORAGE_LEVELDB_DB_MEMTABLE_H_
 #define STORAGE_LEVELDB_DB_MEMTABLE_H_
 
-#include <string>
-
 #include "db/dbformat.h"
 #include "db/skiplist.h"
+#include <string>
+#include <vector>
+
 #include "leveldb/db.h"
+
 #include "util/arena.h"
 
 namespace leveldb {
@@ -19,6 +21,11 @@ class MemTableIterator;
 
 class MemTable {
  public:
+  struct RangeDeletion {
+    std::string start_key;
+    std::string end_key;
+    SequenceNumber seq;
+  };
   // MemTables are reference counted.  The initial reference count
   // is zero and the caller must call Ref() at least once.
   explicit MemTable(const InternalKeyComparator& comparator);
@@ -56,6 +63,11 @@ class MemTable {
   void Add(SequenceNumber seq, ValueType type, const Slice& key,
            const Slice& value);
 
+  void AddRangeDeletion(SequenceNumber seq, const Slice& start_key,
+                        const Slice& end_key);
+
+  const std::vector<RangeDeletion>& GetRangeDeletions() const;
+
   // If memtable contains a value for key, store it in *value and return true.
   // If memtable contains a deletion for key, store a NotFound() error
   // in *status and return true.
@@ -80,6 +92,8 @@ class MemTable {
   int refs_;
   Arena arena_;
   Table table_;
+
+  std::vector<RangeDeletion> range_deletions_;
 };
 
 }  // namespace leveldb

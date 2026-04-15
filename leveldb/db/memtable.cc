@@ -3,10 +3,13 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "db/memtable.h"
+
 #include "db/dbformat.h"
+
 #include "leveldb/comparator.h"
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
+
 #include "util/coding.h"
 
 namespace leveldb {
@@ -118,8 +121,27 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
     const char* key_ptr = GetVarint32Ptr(entry, entry + 5, &key_length);
     if (comparator_.comparator.user_comparator()->Compare(
             Slice(key_ptr, key_length - 8), key.user_key()) == 0) {
-      // Correct user key
       const uint64_t tag = DecodeFixed64(key_ptr + key_length - 8);
+      const SequenceNumber point_seq = tag >> 8;
+
+      bool flag = false;
+      const Slice user_key = key.user_key();
+
+      const auto* ucmp = comparator_.comparator.user_comparator();
+      for (const auto& cell : range_deletions_) {
+        if (ucmp->Compare(cell.start_key, user_key) <= 0 &&
+            ucmp->Compare(user_key, cell.end_key) < 0) {
+          if (cell.seq > point_seq) {
+            flag = true;
+            break;
+          }
+        }
+      }
+      if (flag) {
+        *s = Status::NotFound(Slice());
+        return true;
+      }
+      // Correct user key
       switch (static_cast<ValueType>(tag & 0xff)) {
         case kTypeValue: {
           Slice v = GetLengthPrefixedSlice(key_ptr + key_length);
@@ -133,6 +155,21 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
     }
   }
   return false;
+}
+
+void MemTable::AddRangeDeletion(SequenceNumber seq, const Slice& start_key,
+                                const Slice& end_key) {
+  RangeDeletion del;
+  del.start_key = start_key.ToString();
+  del.end_key = end_key.ToString();
+  del.seq = seq;
+
+  range_deletions_.push_back(del);
+}
+
+const std::vector<MemTable::RangeDeletion>& MemTable::GetRangeDeletions()
+    const {
+  return range_deletions_;
 }
 
 }  // namespace leveldb
