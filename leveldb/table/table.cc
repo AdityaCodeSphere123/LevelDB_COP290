@@ -9,9 +9,11 @@
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/options.h"
+
 #include "table/block.h"
 #include "table/filter_block.h"
 #include "table/format.h"
+#include "table/range_deletion.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
 
@@ -22,6 +24,7 @@ struct Table::Rep {
     delete filter;
     delete[] filter_data;
     delete index_block;
+    delete range_deletions;
   }
 
   Options options;
@@ -33,6 +36,7 @@ struct Table::Rep {
 
   BlockHandle metaindex_handle;  // Handle to metaindex_block: saved from footer
   Block* index_block;
+  RangeDeletionList* range_deletions = nullptr;
 };
 
 Status Table::Open(const Options& options, RandomAccessFile* file,
@@ -80,12 +84,6 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
 }
 
 void Table::ReadMeta(const Footer& footer) {
-  if (rep_->options.filter_policy == nullptr) {
-    return;  // Do not need any metadata
-  }
-
-  // TODO(sanjay): Skip this if footer.metaindex_handle() size indicates
-  // it is an empty block.
   ReadOptions opt;
   if (rep_->options.paranoid_checks) {
     opt.verify_checksums = true;
@@ -98,12 +96,22 @@ void Table::ReadMeta(const Footer& footer) {
   Block* meta = new Block(contents);
 
   Iterator* iter = meta->NewIterator(BytewiseComparator());
-  std::string key = "filter.";
-  key.append(rep_->options.filter_policy->Name());
-  iter->Seek(key);
-  if (iter->Valid() && iter->key() == Slice(key)) {
-    ReadFilter(iter->value());
+
+  if (rep_->options.filter_policy != nullptr) {
+    std::string filter_key = "filter.";
+    filter_key.append(rep_->options.filter_policy->Name());
+    iter->Seek(filter_key);
+    if (iter->Valid() && iter->key() == Slice(filter_key)) {
+      ReadFilter(iter->value());
+    }
   }
+
+  std::string range_del_key = "leveldb.range_deletions";
+  iter->Seek(range_del_key);
+  if (iter->Valid() && iter->key() == Slice(range_del_key)) {
+    ReadRangeDeletions(iter->value());
+  }
+
   delete iter;
   delete meta;
 }
@@ -129,6 +137,39 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
     rep_->filter_data = block.data.data();  // Will need to delete later
   }
   rep_->filter = new FilterBlockReader(rep_->options.filter_policy, block.data);
+}
+
+void Table::ReadRangeDeletions(const Slice& handle_value) {
+  Slice v = handle_value;
+  BlockHandle handle;
+  if (!handle.DecodeFrom(&v).ok()) {
+    return;
+  }
+
+  ReadOptions opt;
+  if (rep_->options.paranoid_checks) opt.verify_checksums = true;
+
+  BlockContents block;
+  if (!ReadBlock(rep_->file, opt, handle, &block).ok()) return;
+
+  Block* range_del_block = new Block(block);
+  rep_->range_deletions = new RangeDeletionList();
+
+  Iterator* iter = range_del_block->NewIterator(BytewiseComparator());
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+    // key is the internal key: user_key + 8-byte tag
+    Slice ikey = iter->key();
+    Slice end_key = iter->value();  // value is the end key
+
+    if (ikey.size() < 8) continue;
+    const uint64_t tag = DecodeFixed64(ikey.data() + ikey.size() - 8);
+    SequenceNumber seq = tag >> 8;
+
+    Slice start_key(ikey.data(), ikey.size() - 8);  // strip tag
+    rep_->range_deletions->Add(start_key, end_key, seq);
+  }
+  delete iter;
+  delete range_del_block;
 }
 
 Table::~Table() { delete rep_; }
@@ -228,7 +269,17 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
       Iterator* block_iter = BlockReader(this, options, iiter->value());
       block_iter->Seek(k);
       if (block_iter->Valid()) {
-        (*handle_result)(arg, block_iter->key(), block_iter->value());
+        bool deleted = false;
+        if (rep_->range_deletions != nullptr) {
+          // Extract sequence number from k (the internal key)
+          Slice user_k(k.data(), k.size() - 8);
+          uint64_t tag = DecodeFixed64(k.data() + k.size() - 8);
+          SequenceNumber read_seq = tag >> 8;
+          deleted = rep_->range_deletions->IsDeleted(user_k, 0, read_seq);
+        }
+        if (!deleted) {
+          (*handle_result)(arg, block_iter->key(), block_iter->value());
+        }
       }
       s = block_iter->status();
       delete block_iter;

@@ -75,6 +75,7 @@ class LEVELDB_EXPORT Table {
 
   void ReadMeta(const Footer& footer);
   void ReadFilter(const Slice& filter_handle_value);
+  void ReadRangeDeletions(const Slice& handle_value);
 
   Rep* const rep_;
 };
