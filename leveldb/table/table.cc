@@ -88,13 +88,13 @@ void Table::ReadMeta(const Footer& footer) {
   if (rep_->options.paranoid_checks) {
     opt.verify_checksums = true;
   }
+
   BlockContents contents;
   if (!ReadBlock(rep_->file, opt, footer.metaindex_handle(), &contents).ok()) {
-    // Do not propagate errors since meta info is not needed for operation
     return;
   }
-  Block* meta = new Block(contents);
 
+  Block* meta = new Block(contents);
   Iterator* iter = meta->NewIterator(BytewiseComparator());
 
   if (rep_->options.filter_policy != nullptr) {
@@ -269,16 +269,26 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
       Iterator* block_iter = BlockReader(this, options, iiter->value());
       block_iter->Seek(k);
       if (block_iter->Valid()) {
-        bool deleted = false;
-        if (rep_->range_deletions != nullptr) {
-          // Extract sequence number from k (the internal key)
-          Slice user_k(k.data(), k.size() - 8);
-          uint64_t tag = DecodeFixed64(k.data() + k.size() - 8);
-          SequenceNumber read_seq = tag >> 8;
-          deleted = rep_->range_deletions->IsDeleted(user_k, 0, read_seq);
-        }
-        if (!deleted) {
-          (*handle_result)(arg, block_iter->key(), block_iter->value());
+        Slice user_key = ExtractUserKey(k);
+        Slice found_user_key = ExtractUserKey(block_iter->key());
+
+        if (found_user_key == user_key) {
+          const uint64_t tag = DecodeFixed64(block_iter->key().data() +
+                                             block_iter->key().size() - 8);
+          SequenceNumber found_seq = tag >> 8;
+          SequenceNumber read_seq = DecodeFixed64(k.data() + k.size() - 8) >> 8;
+
+          bool deleted = false;
+          if (rep_->range_deletions != nullptr) {
+            deleted = rep_->range_deletions->IsDeleted(found_user_key,
+                                                       found_seq, read_seq);
+          }
+
+          if (!deleted) {
+            (*handle_result)(arg, block_iter->key(), block_iter->value());
+          } else {
+            s = Status::NotFound(Slice());
+          }
         }
       }
       s = block_iter->status();

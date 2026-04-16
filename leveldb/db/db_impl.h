@@ -46,6 +46,9 @@ class DBImpl : public DB {
   Status Scan(
       const ReadOptions& options, const Slice& start_key, const Slice& end_key,
       std::vector<std::pair<std::string, std::string>>* result) override;
+  Status DBImpl::DeleteRange(const WriteOptions& options,
+                             const Slice& start_key,
+                             const Slice& end_key) override;
   Iterator* NewIterator(const ReadOptions&) override;
   const Snapshot* GetSnapshot() override;
   void ReleaseSnapshot(const Snapshot* snapshot) override;

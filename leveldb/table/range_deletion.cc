@@ -1,4 +1,4 @@
-#include "range_deletion.h"
+#include "table/range_deletion.h"
 
 namespace leveldb {
 void RangeDeletionList::Add(const Slice& start, const Slice& end,

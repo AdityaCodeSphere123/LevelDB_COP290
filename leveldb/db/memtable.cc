@@ -111,9 +111,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
   Table::Iterator iter(&table_);
   iter.Seek(memkey.data());
 
-  const uint64_t read_tag =
-      DecodeFixed64(key.user_key().data() + key.user_key().size());
-  SequenceNumber read_seq = read_tag >> 8;
+  const Slice ikey = key.internal_key();
+  SequenceNumber read_seq = DecodeFixed64(ikey.data() + ikey.size() - 8) >> 8;
 
   if (iter.Valid()) {
     // entry format is:
