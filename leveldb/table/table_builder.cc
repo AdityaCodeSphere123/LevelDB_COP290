@@ -4,12 +4,14 @@
 
 #include "leveldb/table_builder.h"
 
+#include "db/dbformat.h"
 #include <cassert>
 
 #include "leveldb/comparator.h"
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/options.h"
+
 #include "table/block_builder.h"
 #include "table/filter_block.h"
 #include "table/format.h"
@@ -26,6 +28,7 @@ struct TableBuilder::Rep {
         offset(0),
         data_block(&options),
         index_block(&index_block_options),
+        range_del_block(&options),
         num_entries(0),
         closed(false),
         filter_block(opt.filter_policy == nullptr
@@ -42,6 +45,7 @@ struct TableBuilder::Rep {
   Status status;
   BlockBuilder data_block;
   BlockBuilder index_block;
+  BlockBuilder range_del_block;
   std::string last_key;
   int64_t num_entries;
   bool closed;  // Either Finish() or Abandon() has been called.
@@ -97,6 +101,16 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
   if (!ok()) return;
   if (r->num_entries > 0) {
     assert(r->options.comparator->Compare(key, Slice(r->last_key)) > 0);
+  }
+
+  size_t n = key.size();
+  assert(n >= 8);
+  const uint64_t tag = DecodeFixed64(key.data() + n - 8);
+  ValueType type = static_cast<ValueType>(tag & 0xff);
+
+  if (type == kTypeRangeDeletion) {
+    r->range_del_block.Add(key, value);
+    return;
   }
 
   if (r->pending_index_entry) {
@@ -216,7 +230,12 @@ Status TableBuilder::Finish() {
   assert(!r->closed);
   r->closed = true;
 
-  BlockHandle filter_block_handle, metaindex_block_handle, index_block_handle;
+  BlockHandle filter_block_handle, metaindex_block_handle, index_block_handle,
+      range_del_block_handle;
+
+  if (ok() && !r->range_del_block.empty()) {
+    WriteBlock(&r->range_del_block, &range_del_block_handle);
+  }
 
   // Write filter block
   if (ok() && r->filter_block != nullptr) {
@@ -233,6 +252,13 @@ Status TableBuilder::Finish() {
       key.append(r->options.filter_policy->Name());
       std::string handle_encoding;
       filter_block_handle.EncodeTo(&handle_encoding);
+      meta_index_block.Add(key, handle_encoding);
+    }
+
+    if (!r->range_del_block.empty()) {
+      std::string key = "leveldb.range_deletions";
+      std::string handle_encoding;
+      range_del_block_handle.EncodeTo(&handle_encoding);
       meta_index_block.Add(key, handle_encoding);
     }
 
