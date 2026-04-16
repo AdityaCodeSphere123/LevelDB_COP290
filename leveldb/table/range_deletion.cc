@@ -10,10 +10,11 @@ void RangeDeletionList::Add(const Slice& start, const Slice& end,
   deletions_.push_back(del);
 }
 
-bool RangeDeletionList::IsDeleted(const Slice& key, SequenceNumber seq) const {
-  for (auto& del : deletions_) {
+bool RangeDeletionList::IsDeleted(const Slice& key, SequenceNumber found_seq,
+                                  SequenceNumber read_seq) const {
+  for (const auto& del : deletions_) {
     if (key.compare(del.start_key) >= 0 && key.compare(del.end_key) < 0) {
-      if (del.seq <= seq) {
+      if (del.seq <= read_seq && del.seq > found_seq) {
         return true;
       }
     }

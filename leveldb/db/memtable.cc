@@ -3,10 +3,13 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "db/memtable.h"
+
 #include "db/dbformat.h"
+
 #include "leveldb/comparator.h"
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
+
 #include "util/coding.h"
 
 namespace leveldb {
@@ -97,12 +100,21 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
   std::memcpy(p, value.data(), val_size);
   assert(p + val_size == buf + encoded_len);
   table_.Insert(buf);
+
+  if (type == kTypeRangeDeletion) {
+    range_deletions_.Add(key, value, s);
+  }
 }
 
 bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
   Slice memkey = key.memtable_key();
   Table::Iterator iter(&table_);
   iter.Seek(memkey.data());
+
+  const uint64_t read_tag =
+      DecodeFixed64(key.user_key().data() + key.user_key().size());
+  SequenceNumber read_seq = read_tag >> 8;
+
   if (iter.Valid()) {
     // entry format is:
     //    klength  varint32
@@ -120,18 +132,33 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
             Slice(key_ptr, key_length - 8), key.user_key()) == 0) {
       // Correct user key
       const uint64_t tag = DecodeFixed64(key_ptr + key_length - 8);
-      switch (static_cast<ValueType>(tag & 0xff)) {
+      ValueType type = static_cast<ValueType>(tag & 0xff);
+      SequenceNumber found_seq = tag >> 8;
+
+      if (range_deletions_.IsDeleted(key.user_key(), found_seq, read_seq)) {
+        *s = Status::NotFound(Slice());
+        return true;
+      }
+
+      switch (type) {
         case kTypeValue: {
           Slice v = GetLengthPrefixedSlice(key_ptr + key_length);
           value->assign(v.data(), v.size());
           return true;
         }
         case kTypeDeletion:
+        case kTypeRangeDeletion:
           *s = Status::NotFound(Slice());
           return true;
       }
     }
   }
+
+  if (range_deletions_.IsDeleted(key.user_key(), 0, read_seq)) {
+    *s = Status::NotFound(Slice());
+    return true;
+  }
+
   return false;
 }
 

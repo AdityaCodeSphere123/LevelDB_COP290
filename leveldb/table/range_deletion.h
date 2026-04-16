@@ -20,7 +20,8 @@ class RangeDeletionList {
   RangeDeletionList() = default;
 
   void Add(const Slice& start, const Slice& end, SequenceNumber seq);
-  bool IsDeleted(const Slice& key, SequenceNumber seq) const;
+  bool IsDeleted(const Slice& key, SequenceNumber found_seq,
+                 SequenceNumber read_seq) const;
 
  private:
   std::vector<RangeDeletion> deletions_;
