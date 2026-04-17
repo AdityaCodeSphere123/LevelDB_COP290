@@ -222,6 +222,10 @@ class DBImpl : public DB {
 
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
 
+  // True while ForceFullCompaction() is running.
+  // Normal writes should wait, and unrelated automatic compactions should not be scheduled during this window.
+  bool force_full_compaction_in_progress_ GUARDED_BY(mutex_);
+
   std::vector<SingleCompactionRecord>* ffc_records_ GUARDED_BY(mutex_);
 };
 

@@ -149,6 +149,7 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       manual_compaction_(nullptr),
       versions_(new VersionSet(dbname_, &options_, table_cache_,
                                &internal_comparator_)),
+      force_full_compaction_in_progress_(false),
       ffc_records_(nullptr) {}
 
 DBImpl::~DBImpl() {
@@ -778,6 +779,27 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
   std::vector<SingleCompactionRecord> records;
   {
     MutexLock l(&mutex_);
+    force_full_compaction_in_progress_ = true;
+
+    // Wait for any already-running background work to finish so that the
+    while ((background_compaction_scheduled_ || manual_compaction_ != nullptr) &&
+           bg_error_.ok() &&
+           !shutting_down_.load(std::memory_order_acquire)) {
+      background_work_finished_signal_.Wait();
+    }
+
+    if (shutting_down_.load(std::memory_order_acquire)) {
+      force_full_compaction_in_progress_ = false;
+      background_work_finished_signal_.SignalAll();
+      return Status::IOError("DB shutting down");
+    }
+    if (!bg_error_.ok()) {
+      s = bg_error_;
+      force_full_compaction_in_progress_ = false;
+      background_work_finished_signal_.SignalAll();
+      return s;
+    }
+
     ffc_records_ = &records;
   }
 
@@ -790,6 +812,8 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
     if (ffc_records_ == &records) {
       ffc_records_ = nullptr;
     }
+    force_full_compaction_in_progress_ = false;
+    background_work_finished_signal_.SignalAll();
     return s;
   }
 
@@ -840,6 +864,8 @@ done:
     if (ffc_records_ == &records) {
       ffc_records_ = nullptr;
     }
+    force_full_compaction_in_progress_ = false;
+    background_work_finished_signal_.SignalAll();
     if (s.ok() && !bg_error_.ok()) {
       s = bg_error_;
     }
@@ -908,6 +934,9 @@ void DBImpl::MaybeScheduleCompaction() {
     // DB is being deleted; no more background compactions
   } else if (!bg_error_.ok()) {
     // Already got an error; no more changes
+  } else if (force_full_compaction_in_progress_ &&
+             imm_ == nullptr &&
+             manual_compaction_ == nullptr) {
   } else if (imm_ == nullptr && manual_compaction_ == nullptr &&
              !versions_->NeedsCompaction()) {
     // No work to be done
@@ -1607,6 +1636,9 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       // Yield previous error
       s = bg_error_;
       break;
+    } else if (force_full_compaction_in_progress_ && !force) {
+      // Block normal foreground writes while ForceFullCompaction() is running.
+      background_work_finished_signal_.Wait();
     } else if (allow_delay && versions_->NumLevelFiles(0) >=
                                   config::kL0_SlowdownWritesTrigger) {
       // We are getting close to hitting a hard limit on the number of
