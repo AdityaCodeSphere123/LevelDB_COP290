@@ -64,6 +64,10 @@ class MemTable {
   // Else, return false.
   bool Get(const LookupKey& key, std::string* value, Status* s);
 
+  const RangeDeletionList* GetRangeDeletions() const {
+    return &range_deletions_;
+  }
+
  private:
   friend class MemTableIterator;
   friend class MemTableBackwardIterator;

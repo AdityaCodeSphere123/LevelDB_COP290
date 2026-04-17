@@ -4,25 +4,27 @@
 
 #include "leveldb/db.h"
 
-#include <atomic>
-#include <cinttypes>
-#include <string>
-
-#include "gtest/gtest.h"
 #include "db/db_impl.h"
 #include "db/filename.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include <atomic>
+#include <cinttypes>
+#include <string>
+
 #include "leveldb/cache.h"
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/table.h"
+
 #include "port/port.h"
 #include "port/thread_annotations.h"
 #include "util/hash.h"
 #include "util/logging.h"
 #include "util/mutexlock.h"
 #include "util/testutil.h"
+
+#include "gtest/gtest.h"
 
 namespace leveldb {
 
@@ -419,6 +421,9 @@ class DBTest : public testing::Test {
               break;
             case kTypeDeletion:
               result += "DEL";
+              break;
+            case kTypeRangeDeletion:
+              result += "RDEL";
               break;
           }
         }
@@ -2125,6 +2130,17 @@ class ModelDB : public DB {
     assert(false);  // Not implemented
     return Status::NotFound(key);
   }
+  Status Scan(
+      const ReadOptions& options, const Slice& start_key, const Slice& end_key,
+      std::vector<std::pair<std::string, std::string>>* result) override {
+    return Status::NotSupported("Scan not implemented in ModelDB");
+  }
+
+  Status DeleteRange(const WriteOptions& options, const Slice& start_key,
+                     const Slice& end_key) override {
+    return Status::NotSupported("DeleteRange not implemented in ModelDB");
+  }
+  Status ForceFullCompaction() override { return Status::OK(); }
   Iterator* NewIterator(const ReadOptions& options) override {
     if (options.snapshot == nullptr) {
       KVMap* saved = new KVMap;

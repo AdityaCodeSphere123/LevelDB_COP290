@@ -1656,5 +1656,24 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
   }
   return result;
 }
+Status DBImpl::ForceFullCompaction() {
+  // Passing nullptr for both start and end tells LevelDB to compact everything.
+  CompactRange(nullptr, nullptr);
+  return Status::OK();
+}
 
+void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
+  MutexLock l(&mutex_);
+  if (mem_) list->MergeInto(mem_->GetRangeDeletions());
+  if (imm_) list->MergeInto(imm_->GetRangeDeletions());
+  if (versions_ && versions_->current()) {
+    Version* current = versions_->current();
+    for (int level = 0; level < config::kNumLevels; level++) {
+      for (size_t i = 0; i < current->files_[level].size(); i++) {
+        FileMetaData* f = current->files_[level][i];
+        table_cache_->GetRangeDeletions(f->number, f->file_size, list);
+      }
+    }
+  }
+}
 }  // namespace leveldb

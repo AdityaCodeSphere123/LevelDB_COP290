@@ -8,3 +8,4 @@ build/
 out/
 
 db/leveldb_test_bench.cc
+Tester
