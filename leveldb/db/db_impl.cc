@@ -641,6 +641,23 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
+Status DBImpl::FlushMemTableSync() {
+  // Trigger an empty write to force a switch to a new memtable.
+  Status s = Write(WriteOptions(), nullptr);
+  if (!s.ok()) return s;
+
+  // Now wait until the immutable memtable (if any) has been flushed.
+  MutexLock l(&mutex_);
+  while (imm_ != nullptr && bg_error_.ok() &&
+         !shutting_down_.load(std::memory_order_acquire)) {
+    background_work_finished_signal_.Wait();
+  }
+  if (imm_ != nullptr) {
+    s = bg_error_;
+  }
+  return s;
+}
+
 Status DBImpl::CompactLevelFull(int level) {
   assert(level >= 0 && level + 1 < config::kNumLevels);
   while (true) {
@@ -720,8 +737,52 @@ Status DBImpl::CompactLevelFull(int level) {
   }
 }
 
-Status DBImpl::ForceFullCompaction(FullCompactionStats* stats) {
-  CompactRange(nullptr, nullptr);
+Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
+  Log(options_.info_log, "ForceFullCompaction: starting");
+
+  // Phase 1: flush memtable so all data is on disk.
+  Status s = FlushMemTableSync();
+  if (!s.ok()) {
+    return s;
+  }
+
+  // Phase 2: convergence-wave sweep.
+  // We run waves until a full sweep across all levels finds no files to compact.
+  int wave = 0;
+  while (true) {
+    bool work_done_in_wave = false;
+    ++wave;
+    Log(options_.info_log, "ForceFullCompaction: wave %d begin", wave);
+
+    for (int level = 0; level + 1 < config::kNumLevels; level++) {
+      {
+        MutexLock l(&mutex_);
+        if (shutting_down_.load(std::memory_order_acquire) || !bg_error_.ok()) {
+          return bg_error_.ok() ? Status::IOError("DB shutting down") : bg_error_;
+        }
+        // If the level is already empty, skip it.
+        if (versions_->NumLevelFiles(level) == 0) {
+          continue;
+        }
+      }
+
+      // CompactLevelFull will drain all files from this level into level+1.
+      s = CompactLevelFull(level);
+      if (!s.ok()) {
+        return s;
+      }
+      work_done_in_wave = true;
+    }
+
+    Log(options_.info_log, "ForceFullCompaction: wave %d done", wave);
+
+    if (!work_done_in_wave) {
+      // A full sweep found no files to compact — the tree is stable.
+      break;
+    }
+  }
+
+  Log(options_.info_log, "ForceFullCompaction: complete");
   return Status::OK();
 }
 Status DBImpl::TEST_CompactMemTable() {
@@ -1128,18 +1189,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   mutex_.Lock();
   stats_[compact->compaction->level() + 1].Add(stats);
-
-  // If a ForceFullCompaction is in progress, record per-compaction details.
-  if (ffc_records_ != nullptr) {
-    SingleCompactionRecord rec;
-    for (int which = 0; which < 2; which++) {
-      rec.input_files += compact->compaction->num_input_files(which);
-    }
-    rec.output_files = static_cast<int>(compact->outputs.size());
-    rec.bytes_read = stats.bytes_read;
-    rec.bytes_written = stats.bytes_written;
-    ffc_records_->push_back(rec);
-  }
 
   if (status.ok()) {
     status = InstallCompactionResults(compact);
