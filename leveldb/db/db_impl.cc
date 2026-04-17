@@ -757,19 +757,22 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
     for (int level = 0; level + 1 < config::kNumLevels; level++) {
       {
         MutexLock l(&mutex_);
-        if (shutting_down_.load(std::memory_order_acquire) || !bg_error_.ok()) {
-          return bg_error_.ok() ? Status::IOError("DB shutting down") : bg_error_;
+        if (shutting_down_.load(std::memory_order_acquire)) {
+          s = Status::IOError("DB shutting down");
+          goto done;
         }
-        // If the level is already empty, skip it.
+        if (!bg_error_.ok()) {
+          s = bg_error_;
+          goto done;
+        }
         if (versions_->NumLevelFiles(level) == 0) {
           continue;
         }
       }
 
-      // CompactLevelFull will drain all files from this level into level+1.
       s = CompactLevelFull(level);
       if (!s.ok()) {
-        return s;
+        goto done;
       }
       work_done_in_wave = true;
     }
@@ -781,6 +784,8 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
       break;
     }
   }
+
+done:
 
   Log(options_.info_log, "ForceFullCompaction: complete");
   return Status::OK();
