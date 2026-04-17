@@ -641,6 +641,21 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
+Status DBImpl::FlushMemTableSync() {
+  // Trigger an empty write to force a switch to a new memtable.
+  Status s = Write(WriteOptions(), nullptr);
+  if (!s.ok()) return s;
+  // Now wait until the immutable memtable (if any) has been flushed.
+  MutexLock l(&mutex_);
+  while (imm_ != nullptr && bg_error_.ok() &&
+         !shutting_down_.load(std::memory_order_acquire)) {
+    background_work_finished_signal_.Wait();
+  }
+  if (imm_ != nullptr) {
+    s = bg_error_;
+  }
+  return s;
+}
 Status DBImpl::CompactLevelFull(int level) {
   assert(level >= 0 && level + 1 < config::kNumLevels);
   while (true) {
@@ -716,15 +731,30 @@ Status DBImpl::CompactLevelFull(int level) {
   }
 }
 
-Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
+
+Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
+  const uint64_t start_micros = env_->NowMicros();
+  Status s;
+  std::vector<SingleCompactionRecord> records;
+  {
+    MutexLock l(&mutex_);
+    ffc_records_ = &records;
+  }
+
   Log(options_.info_log, "ForceFullCompaction: starting");
 
-  // first flush memtable so all data is on disk
-  Status s = FlushMemTableSync();
+  // first flush memtable so all data is on disk.
+  s = FlushMemTableSync();
   if (!s.ok()) {
+    MutexLock l(&mutex_);
+    if (ffc_records_ == &records) {
+      ffc_records_ = nullptr;
+    }
     return s;
   }
+
   // then convergence-wave sweep.
+  // We run waves until a full sweep across all levels finds no files to compact.
   int wave = 0;
   while (true) {
     bool work_done_in_wave = false;
@@ -734,19 +764,24 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
     for (int level = 0; level + 1 < config::kNumLevels; level++) {
       {
         MutexLock l(&mutex_);
-        if (shutting_down_.load(std::memory_order_acquire) || !bg_error_.ok()) {
-          return bg_error_.ok() ? Status::IOError("DB shutting down")
-                                : bg_error_;
+        if (shutting_down_.load(std::memory_order_acquire)) {
+          s = Status::IOError("DB shutting down");
+          goto done;
+        }
+        if (!bg_error_.ok()) {
+          s = bg_error_;
+          goto done;
         }
         // If the level is already empty, skip it.
         if (versions_->NumLevelFiles(level) == 0) {
           continue;
         }
       }
+
       // CompactLevelFull will drain all files from this level into level+1.
       s = CompactLevelFull(level);
       if (!s.ok()) {
-        return s;
+        goto done;
       }
       work_done_in_wave = true;
     }
