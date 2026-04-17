@@ -684,7 +684,9 @@ void FullCompactionStats::Print() const {
 }
 Status DBImpl::FlushMemTableSync() {
   // Trigger an empty write to force a switch to a new memtable.
-  Status s = Write(WriteOptions(), nullptr);
+  WriteOptions options;
+  options.sync = true;
+  Status s = Write(options, nullptr);
   if (!s.ok()) return s;
   // Now wait until the immutable memtable (if any) has been flushed.
   MutexLock l(&mutex_);
@@ -1579,7 +1581,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
   }
-
+  background_work_finished_signal_.SignalAll();
   return status;
 }
 
