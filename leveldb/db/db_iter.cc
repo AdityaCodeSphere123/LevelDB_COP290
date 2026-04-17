@@ -7,8 +7,10 @@
 #include "db/db_impl.h"
 #include "db/dbformat.h"
 #include "db/filename.h"
+
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
+
 #include "port/port.h"
 #include "util/logging.h"
 #include "util/mutexlock.h"
@@ -183,6 +185,7 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
     if (ParseKey(&ikey) && ikey.sequence <= sequence_) {
       switch (ikey.type) {
         case kTypeDeletion:
+        case kTypeRangeDeletion:
           // Arrange to skip all upcoming entries for this key since
           // they are hidden by this deletion.
           SaveKey(ikey.user_key, skip);
@@ -247,7 +250,7 @@ void DBIter::FindPrevUserEntry() {
           break;
         }
         value_type = ikey.type;
-        if (value_type == kTypeDeletion) {
+        if (value_type == kTypeDeletion || value_type == kTypeRangeDeletion) {
           saved_key_.clear();
           ClearSavedValue();
         } else {

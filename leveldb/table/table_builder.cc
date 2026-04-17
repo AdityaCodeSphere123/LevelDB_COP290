@@ -233,6 +233,8 @@ Status TableBuilder::Finish() {
   BlockHandle filter_block_handle, metaindex_block_handle, index_block_handle,
       range_del_block_handle;
 
+  bool has_range_dels = !r->range_del_block.empty();
+
   if (ok() && !r->range_del_block.empty()) {
     WriteBlock(&r->range_del_block, &range_del_block_handle);
   }
@@ -255,7 +257,7 @@ Status TableBuilder::Finish() {
       meta_index_block.Add(key, handle_encoding);
     }
 
-    if (!r->range_del_block.empty()) {
+    if (has_range_dels) {
       std::string key = "leveldb.range_deletions";
       std::string handle_encoding;
       range_del_block_handle.EncodeTo(&handle_encoding);

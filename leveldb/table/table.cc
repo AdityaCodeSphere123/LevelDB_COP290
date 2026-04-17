@@ -291,7 +291,7 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
           }
         }
       }
-      s = block_iter->status();
+      if (s.ok()) s = block_iter->status();
       delete block_iter;
     }
   }

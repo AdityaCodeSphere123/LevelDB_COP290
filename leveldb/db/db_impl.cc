@@ -1013,7 +1013,14 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         if (!status.ok()) {
           break;
         }
-        for (const auto& del : compaction_range_dels.GetDeletions()) {
+        auto dels = compaction_range_dels.GetDeletions();
+        std::sort(dels.begin(), dels.end(),
+                  [](const RangeDeletion& a, const RangeDeletion& b) {
+                    int cmp = a.start_key.compare(b.start_key);
+                    if (cmp != 0) return cmp < 0;
+                    return a.seq > b.seq;  // Descending sequence numbers
+                  });
+        for (const auto& del : dels) {
           InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
           compact->builder->Add(tombstone_key.Encode(), del.end_key);
         }
@@ -1229,11 +1236,13 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
 
 Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
                            const Slice& end_key) {
+  if (start_key.compare(end_key) >= 0) {
+    return Status::OK();
+  }
   WriteBatch batch;
   batch.DeleteRange(start_key, end_key);
   return Write(options, &batch);
 }
-
 void DBImpl::RecordReadSample(Slice key) {
   MutexLock l(&mutex_);
   if (versions_->current()->RecordReadSample(key)) {

@@ -4,16 +4,17 @@
 
 #include "db/version_set.h"
 
-#include <algorithm>
-#include <cstdio>
-
 #include "db/filename.h"
 #include "db/log_reader.h"
 #include "db/log_writer.h"
 #include "db/memtable.h"
 #include "db/table_cache.h"
+#include <algorithm>
+#include <cstdio>
+
 #include "leveldb/env.h"
 #include "leveldb/table_builder.h"
+
 #include "table/merger.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
@@ -246,12 +247,7 @@ void Version::AddIterators(const ReadOptions& options,
 
 // Callback from TableCache::Get()
 namespace {
-enum SaverState {
-  kNotFound,
-  kFound,
-  kDeleted,
-  kCorrupt,
-};
+enum SaverState { kNotFound, kFound, kDeleted, kCorrupt, kDeletedByRange };
 struct Saver {
   SaverState state;
   const Comparator* ucmp;
@@ -266,7 +262,15 @@ static void SaveValue(void* arg, const Slice& ikey, const Slice& v) {
     s->state = kCorrupt;
   } else {
     if (s->ucmp->Compare(parsed_key.user_key, s->user_key) == 0) {
-      s->state = (parsed_key.type == kTypeValue) ? kFound : kDeleted;
+      if (parsed_key.type == kTypeValue) {
+        s->state = kFound;
+      } else if (parsed_key.type == kTypeDeletion) {
+        s->state = kDeleted;
+      } else if (parsed_key.type == kTypeRangeDeletion) {
+        s->state = kDeletedByRange;  // Halt search for this key
+      } else {
+        s->state = kCorrupt;
+      }
       if (s->state == kFound) {
         s->value->assign(v.data(), v.size());
       }
@@ -365,6 +369,7 @@ Status Version::Get(const ReadOptions& options, const LookupKey& k,
           state->found = true;
           return false;
         case kDeleted:
+        case kDeletedByRange:
           return false;
         case kCorrupt:
           state->s =
