@@ -737,12 +737,24 @@ Status DBImpl::CompactLevelFull(int level) {
   }
 }
 
-Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
+Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
+  const uint64_t start_micros = env_->NowMicros();
+  Status s;
+
+  std::vector<SingleCompactionRecord> records;
+  {
+    MutexLock l(&mutex_);
+    ffc_records_ = &records;
+  }
+
   Log(options_.info_log, "ForceFullCompaction: starting");
 
-  // Phase 1: flush memtable so all data is on disk.
-  Status s = FlushMemTableSync();
+  s = FlushMemTableSync();
   if (!s.ok()) {
+    MutexLock l(&mutex_);
+    if (ffc_records_ == &records) {
+      ffc_records_ = nullptr;
+    }
     return s;
   }
 
@@ -786,6 +798,15 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* /*out_stats*/) {
   }
 
 done:
+  {
+    MutexLock l(&mutex_);
+    if (ffc_records_ == &records) {
+      ffc_records_ = nullptr;
+    }
+    if (s.ok() && !bg_error_.ok()) {
+      s = bg_error_;
+    }
+  }
 
   Log(options_.info_log, "ForceFullCompaction: complete");
   return Status::OK();
