@@ -780,9 +780,9 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
   {
     MutexLock l(&mutex_);
     force_full_compaction_in_progress_ = true;
-
-    // Wait for any already-running background work to finish so that the
-    while ((background_compaction_scheduled_ || manual_compaction_ != nullptr) &&
+    while ((!writers_.empty() ||
+            background_compaction_scheduled_ ||
+            manual_compaction_ != nullptr) &&
            bg_error_.ok() &&
            !shutting_down_.load(std::memory_order_acquire)) {
       background_work_finished_signal_.Wait();
@@ -821,7 +821,7 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
   // We run waves until a full sweep across all levels finds no files to compact.
   int wave = 0;
   while (true) {
-    bool work_done_in_wave = false;
+    size_t records_before_wave = records.size();
     ++wave;
     Log(options_.info_log, "ForceFullCompaction: wave %d begin", wave);
 
@@ -847,12 +847,11 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
       if (!s.ok()) {
         goto done;
       }
-      work_done_in_wave = true;
     }
 
     Log(options_.info_log, "ForceFullCompaction: wave %d done", wave);
 
-    if (!work_done_in_wave) {
+    if (records.size() == records_before_wave) {
       // A full sweep found no files to compact — the tree is stable.
       break;
     }
@@ -1508,6 +1507,24 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   w.done = false;
 
   MutexLock l(&mutex_);
+
+  // Block new foreground writes while ForceFullCompaction() is running.
+  // Internal nullptr writes used by ForceFullCompaction()/tests are still
+  // allowed so they can flush the memtable synchronously.
+  while (updates != nullptr &&
+         force_full_compaction_in_progress_ &&
+         bg_error_.ok() &&
+         !shutting_down_.load(std::memory_order_acquire)) {
+    background_work_finished_signal_.Wait();
+  }
+
+  if (!bg_error_.ok()) {
+    return bg_error_;
+  }
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    return Status::IOError("DB shutting down");
+  }
+
   writers_.push_back(&w);
   while (!w.done && &w != writers_.front()) {
     w.cv.Wait();
@@ -1525,10 +1542,6 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     WriteBatchInternal::SetSequence(write_batch, last_sequence + 1);
     last_sequence += WriteBatchInternal::Count(write_batch);
 
-    // Add to log and apply to memtable.  We can release the lock
-    // during this phase since &w is currently responsible for logging
-    // and protects against concurrent loggers and concurrent writes
-    // into mem_.
     {
       mutex_.Unlock();
       status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
@@ -1544,9 +1557,6 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
       }
       mutex_.Lock();
       if (sync_error) {
-        // The state of the log file is indeterminate: the log record we
-        // just added may or may not show up when the DB is re-opened.
-        // So we force the DB into a mode where all future writes fail.
         RecordBackgroundError(status);
       }
     }
@@ -1566,7 +1576,6 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     if (ready == last_writer) break;
   }
 
-  // Notify new head of write queue
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
   }
@@ -1633,45 +1642,29 @@ Status DBImpl::MakeRoomForWrite(bool force) {
   Status s;
   while (true) {
     if (!bg_error_.ok()) {
-      // Yield previous error
       s = bg_error_;
       break;
-    } else if (force_full_compaction_in_progress_ && !force) {
-      // Block normal foreground writes while ForceFullCompaction() is running.
-      background_work_finished_signal_.Wait();
     } else if (allow_delay && versions_->NumLevelFiles(0) >=
                                   config::kL0_SlowdownWritesTrigger) {
-      // We are getting close to hitting a hard limit on the number of
-      // L0 files.  Rather than delaying a single write by several
-      // seconds when we hit the hard limit, start delaying each
-      // individual write by 1ms to reduce latency variance.  Also,
-      // this delay hands over some CPU to the compaction thread in
-      // case it is sharing the same core as the writer.
       mutex_.Unlock();
       env_->SleepForMicroseconds(1000);
-      allow_delay = false;  // Do not delay a single write more than once
+      allow_delay = false;
       mutex_.Lock();
     } else if (!force &&
                (mem_->ApproximateMemoryUsage() <= options_.write_buffer_size)) {
-      // There is room in current memtable
       break;
     } else if (imm_ != nullptr) {
-      // We have filled up the current memtable, but the previous
-      // one is still being compacted, so we wait.
       Log(options_.info_log, "Current memtable full; waiting...\n");
       background_work_finished_signal_.Wait();
     } else if (versions_->NumLevelFiles(0) >= config::kL0_StopWritesTrigger) {
-      // There are too many level-0 files.
       Log(options_.info_log, "Too many L0 files; waiting...\n");
       background_work_finished_signal_.Wait();
     } else {
-      // Attempt to switch to a new memtable and trigger compaction of old
       assert(versions_->PrevLogNumber() == 0);
       uint64_t new_log_number = versions_->NewFileNumber();
       WritableFile* lfile = nullptr;
       s = env_->NewWritableFile(LogFileName(dbname_, new_log_number), &lfile);
       if (!s.ok()) {
-        // Avoid chewing through file number space in a tight loop.
         versions_->ReuseFileNumber(new_log_number);
         break;
       }
