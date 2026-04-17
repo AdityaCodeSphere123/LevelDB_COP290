@@ -1928,12 +1928,6 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
   }
   return result;
 }
-Status DBImpl::ForceFullCompaction() {
-  // Passing nullptr for both start and end tells LevelDB to compact everything.
-  CompactRange(nullptr, nullptr);
-  return Status::OK();
-}
-
 void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
   MutexLock l(&mutex_);
   if (mem_) list->MergeInto(mem_->GetRangeDeletions());

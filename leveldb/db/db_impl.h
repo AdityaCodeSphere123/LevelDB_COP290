@@ -49,7 +49,6 @@ class DBImpl : public DB {
       std::vector<std::pair<std::string, std::string>>* result) override;
   Status DeleteRange(const WriteOptions& options, const Slice& start_key,
                      const Slice& end_key) override;
-  Status ForceFullCompaction() override;
 
   void GetRangeDeletions(RangeDeletionList* list);
   Iterator* NewIterator(const ReadOptions&) override;

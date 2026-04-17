@@ -26,7 +26,6 @@
 #include "util/mutexlock.h"
 #include "util/testutil.h"
 
-#include "gtest/gtest.h"
 
 namespace leveldb {
 
