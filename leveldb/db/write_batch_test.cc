@@ -2,12 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
-#include "gtest/gtest.h"
 #include "db/memtable.h"
 #include "db/write_batch_internal.h"
+
 #include "leveldb/db.h"
 #include "leveldb/env.h"
+
 #include "util/logging.h"
+
+#include "gtest/gtest.h"
 
 namespace leveldb {
 
@@ -34,6 +37,14 @@ static std::string PrintContents(WriteBatch* b) {
       case kTypeDeletion:
         state.append("Delete(");
         state.append(ikey.user_key.ToString());
+        state.append(")");
+        count++;
+        break;
+      case kTypeRangeDeletion:
+        state.append("DeleteRange(");
+        state.append(ikey.user_key.ToString());
+        state.append(", ");
+        state.append(iter->value().ToString());
         state.append(")");
         count++;
         break;

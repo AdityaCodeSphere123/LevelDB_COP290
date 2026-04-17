@@ -22,6 +22,7 @@
 namespace leveldb {
 
 class MemTable;
+class RangeDeletionList;
 class TableCache;
 class Version;
 class VersionEdit;
@@ -46,6 +47,11 @@ class DBImpl : public DB {
   Status Scan(
       const ReadOptions& options, const Slice& start_key, const Slice& end_key,
       std::vector<std::pair<std::string, std::string>>* result) override;
+  Status DeleteRange(const WriteOptions& options, const Slice& start_key,
+                     const Slice& end_key) override;
+  Status ForceFullCompaction() override;
+
+  void GetRangeDeletions(RangeDeletionList* list);
   Iterator* NewIterator(const ReadOptions&) override;
   const Snapshot* GetSnapshot() override;
   void ReleaseSnapshot(const Snapshot* snapshot) override;

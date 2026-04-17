@@ -7,17 +7,19 @@
 #ifndef STORAGE_LEVELDB_DB_TABLE_CACHE_H_
 #define STORAGE_LEVELDB_DB_TABLE_CACHE_H_
 
+#include "db/dbformat.h"
 #include <cstdint>
 #include <string>
 
-#include "db/dbformat.h"
 #include "leveldb/cache.h"
 #include "leveldb/table.h"
+
 #include "port/port.h"
 
 namespace leveldb {
 
 class Env;
+class RangeDeletionList;
 
 class TableCache {
  public:
@@ -43,6 +45,9 @@ class TableCache {
   Status Get(const ReadOptions& options, uint64_t file_number,
              uint64_t file_size, const Slice& k, void* arg,
              void (*handle_result)(void*, const Slice&, const Slice&));
+
+  void GetRangeDeletions(uint64_t file_number, uint64_t file_size,
+                         RangeDeletionList* dest_list);
 
   // Evict any entry for the specified file number
   void Evict(uint64_t file_number);

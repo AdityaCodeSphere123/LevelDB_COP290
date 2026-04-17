@@ -5,11 +5,13 @@
 #ifndef STORAGE_LEVELDB_DB_MEMTABLE_H_
 #define STORAGE_LEVELDB_DB_MEMTABLE_H_
 
-#include <string>
-
 #include "db/dbformat.h"
 #include "db/skiplist.h"
+#include <string>
+
 #include "leveldb/db.h"
+
+#include "table/range_deletion.h"
 #include "util/arena.h"
 
 namespace leveldb {
@@ -62,6 +64,10 @@ class MemTable {
   // Else, return false.
   bool Get(const LookupKey& key, std::string* value, Status* s);
 
+  const RangeDeletionList* GetRangeDeletions() const {
+    return &range_deletions_;
+  }
+
  private:
   friend class MemTableIterator;
   friend class MemTableBackwardIterator;
@@ -80,6 +86,7 @@ class MemTable {
   int refs_;
   Arena arena_;
   Table table_;
+  RangeDeletionList range_deletions_;
 };
 
 }  // namespace leveldb

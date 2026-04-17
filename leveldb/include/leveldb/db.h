@@ -114,6 +114,9 @@ class LEVELDB_EXPORT DB {
       const ReadOptions& options, const Slice& start_key, const Slice& end_key,
       std::vector<std::pair<std::string, std::string>>* result) = 0;
 
+  virtual Status DeleteRange(const WriteOptions& options,
+                             const Slice& start_key, const Slice& end_key) = 0;
+
   // Return a heap-allocated iterator over the contents of the database.
   // The result of NewIterator() is initially invalid (caller must
   // call one of the Seek methods on the iterator before using it).

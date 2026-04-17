@@ -31,6 +31,7 @@
 #include "port/port.h"
 #include "table/block.h"
 #include "table/merger.h"
+#include "table/range_deletion.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
 #include "util/logging.h"
@@ -1178,6 +1179,15 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
 
+  RangeDeletionList compaction_range_dels;
+  for (int which = 0; which < 2; which++) {
+    for (int i = 0; i < compact->compaction->num_input_files(which); i++) {
+      FileMetaData* f = compact->compaction->input(which, i);
+      table_cache_->GetRangeDeletions(f->number, f->file_size,
+                                      &compaction_range_dels);
+    }
+  }
+
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
 
   // Release mutex while we're actually doing the compaction work
@@ -1189,6 +1199,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   std::string current_user_key;
   bool has_current_user_key = false;
   SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
+
+  bool tombstones_injected = false;
   while (input->Valid() && !shutting_down_.load(std::memory_order_acquire)) {
     // Prioritize immutable compaction work
     if (has_imm_.load(std::memory_order_relaxed)) {
@@ -1220,9 +1232,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       has_current_user_key = false;
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
-      if (!has_current_user_key ||
-          user_comparator()->Compare(ikey.user_key, Slice(current_user_key)) !=
-              0) {
+      if (compaction_range_dels.IsDeleted(ikey.user_key, ikey.sequence,
+                                          kMaxSequenceNumber)) {
+        drop = true;
+      } else if (!has_current_user_key ||
+                 user_comparator()->Compare(ikey.user_key,
+                                            Slice(current_user_key)) != 0) {
         // First occurrence of this user key
         current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
         has_current_user_key = true;
@@ -1263,6 +1278,30 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         status = OpenCompactionOutputFile(compact);
         if (!status.ok()) {
           break;
+        }
+
+        if (!tombstones_injected) {
+          auto dels = compaction_range_dels.GetDeletions();
+          std::sort(dels.begin(), dels.end(),
+                    [](const RangeDeletion& a, const RangeDeletion& b) {
+                      int cmp = a.start_key.compare(b.start_key);
+                      if (cmp != 0) return cmp < 0;
+                      return a.seq > b.seq;  // Descending sequence numbers
+                    });
+
+          auto last =
+              std::unique(dels.begin(), dels.end(),
+                          [](const RangeDeletion& a, const RangeDeletion& b) {
+                            return a.start_key == b.start_key && a.seq == b.seq;
+                          });
+          dels.erase(last, dels.end());
+
+          for (const auto& del : dels) {
+            InternalKey tombstone_key(del.start_key, del.seq,
+                                      kTypeRangeDeletion);
+            compact->builder->Add(tombstone_key.Encode(), del.end_key);
+          }
+          tombstones_injected = true;
         }
       }
       if (compact->builder->NumEntries() == 0) {
@@ -1466,8 +1505,17 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   it->Seek(start_key);
 
   while (it->Valid() && it->key().compare(end_key) < 0) {
-    result->emplace_back(it->key().ToString(), it->value().ToString());
-    it->Next();
+    std::string value;
+
+    Status s = this->Get(options, it->key(), &value);
+    if (s.ok()) {
+      result->emplace_back(it->key().ToString(), value);
+      it->Next();
+    } else if (s.IsNotFound()) {
+      it->Next();
+    } else {
+      it->Next();
+    }
   }
   Status status = it->status();
 
@@ -1476,6 +1524,15 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   return status;
 }
 
+Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
+                           const Slice& end_key) {
+  if (start_key.compare(end_key) >= 0) {
+    return Status::OK();
+  }
+  WriteBatch batch;
+  batch.DeleteRange(start_key, end_key);
+  return Write(options, &batch);
+}
 void DBImpl::RecordReadSample(Slice key) {
   MutexLock l(&mutex_);
   if (versions_->current()->RecordReadSample(key)) {
@@ -1871,5 +1928,24 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
   }
   return result;
 }
+Status DBImpl::ForceFullCompaction() {
+  // Passing nullptr for both start and end tells LevelDB to compact everything.
+  CompactRange(nullptr, nullptr);
+  return Status::OK();
+}
 
+void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
+  MutexLock l(&mutex_);
+  if (mem_) list->MergeInto(mem_->GetRangeDeletions());
+  if (imm_) list->MergeInto(imm_->GetRangeDeletions());
+  if (versions_ && versions_->current()) {
+    Version* current = versions_->current();
+    for (int level = 0; level < config::kNumLevels; level++) {
+      for (size_t i = 0; i < current->files_[level].size(); i++) {
+        FileMetaData* f = current->files_[level][i];
+        table_cache_->GetRangeDeletions(f->number, f->file_size, list);
+      }
+    }
+  }
+}
 }  // namespace leveldb
