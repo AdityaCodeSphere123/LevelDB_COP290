@@ -641,6 +641,46 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
+std::string FullCompactionStats::ToString() const {
+  auto FormatBytes = [](int64_t b) -> std::string {
+    char buf[64];
+    if (b < 1024LL) {
+      std::snprintf(buf, sizeof(buf), "%lld B", static_cast<long long>(b));
+    } else if (b < 1024LL * 1024) {
+      std::snprintf(buf, sizeof(buf), "%.2f KiB",
+                    static_cast<double>(b) / 1024.0);
+    } else if (b < 1024LL * 1024 * 1024) {
+      std::snprintf(buf, sizeof(buf), "%.2f MiB",
+                    static_cast<double>(b) / (1024.0 * 1024));
+    } else {
+      std::snprintf(buf, sizeof(buf), "%.2f GiB",
+                    static_cast<double>(b) / (1024.0 * 1024 * 1024));
+    }
+    return buf;
+  };
+  char buf[1024];
+  std::snprintf(buf, sizeof(buf),
+               "\nForceFullCompaction Report:\n"
+               "Compactions executed: %lld\n"
+               "Input Files: %lld\n"
+               "Output Files: %lld\n"
+               "Bytes Read: %s\n"
+               "Bytes Written: %s\n"
+               "Elapsed Time: %s\n",
+               static_cast<long long>(num_compactions),
+               static_cast<long long>(num_input_files),
+               static_cast<long long>(num_output_files),
+               FormatBytes(bytes_read).c_str(),
+               FormatBytes(bytes_written).c_str(),
+               (std::to_string(elapsed_micros / 1000) + " ms").c_str());
+  return buf;
+}
+
+void FullCompactionStats::Print() const {
+  std::string s = ToString();
+  std::fwrite(s.data(), 1, s.size(), stdout);
+  std::fflush(stdout);
+}
 Status DBImpl::FlushMemTableSync() {
   // Trigger an empty write to force a switch to a new memtable.
   Status s = Write(WriteOptions(), nullptr);
