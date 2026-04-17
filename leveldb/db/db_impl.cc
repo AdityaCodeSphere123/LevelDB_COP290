@@ -1191,8 +1191,17 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   it->Seek(start_key);
 
   while (it->Valid() && it->key().compare(end_key) < 0) {
-    result->emplace_back(it->key().ToString(), it->value().ToString());
-    it->Next();
+    std::string value;
+
+    Status s = this->Get(options, it->key(), &value);
+    if (s.ok()) {
+      result->emplace_back(it->key().ToString(), value);
+      it->Next();
+    } else if (s.IsNotFound()) {
+      it->Next();
+    } else {
+      it->Next();
+    }
   }
   Status status = it->status();
 
