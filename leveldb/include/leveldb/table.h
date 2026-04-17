@@ -19,6 +19,7 @@ struct Options;
 class RandomAccessFile;
 struct ReadOptions;
 class TableCache;
+class RangeDeletionList;
 
 // A Table is a sorted map from strings to strings.  Tables are
 // immutable and persistent.  A Table may be safely accessed from
@@ -57,6 +58,8 @@ class LEVELDB_EXPORT Table {
   // E.g., the approximate offset of the last key in the table will
   // be close to the file length.
   uint64_t ApproximateOffsetOf(const Slice& key) const;
+
+  RangeDeletionList* GetRangeDeletions() const;
 
  private:
   friend class TableCache;

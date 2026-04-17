@@ -5,8 +5,11 @@
 #include "db/table_cache.h"
 
 #include "db/filename.h"
+
 #include "leveldb/env.h"
 #include "leveldb/table.h"
+
+#include "table/range_deletion.h"
 #include "util/coding.h"
 
 namespace leveldb {
@@ -115,6 +118,23 @@ void TableCache::Evict(uint64_t file_number) {
   char buf[sizeof(file_number)];
   EncodeFixed64(buf, file_number);
   cache_->Erase(Slice(buf, sizeof(buf)));
+}
+void TableCache::GetRangeDeletions(uint64_t file_number, uint64_t file_size,
+                                   RangeDeletionList* dest_list) {
+  Cache::Handle* handle = nullptr;
+  Status s = FindTable(file_number, file_size, &handle);
+
+  if (s.ok()) {
+    Table* table =
+        reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+    RangeDeletionList* table_dels = table->GetRangeDeletions();
+
+    if (table_dels != nullptr) {
+      dest_list->MergeInto(table_dels);
+    }
+
+    cache_->Release(handle);
+  }
 }
 
 }  // namespace leveldb

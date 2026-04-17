@@ -31,6 +31,7 @@
 #include "port/port.h"
 #include "table/block.h"
 #include "table/merger.h"
+#include "table/range_deletion.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
 #include "util/logging.h"
@@ -914,6 +915,15 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
 
+  RangeDeletionList compaction_range_dels;
+  for (int which = 0; which < 2; which++) {
+    for (int i = 0; i < compact->compaction->num_input_files(which); i++) {
+      FileMetaData* f = compact->compaction->input(which, i);
+      table_cache_->GetRangeDeletions(f->number, f->file_size,
+                                      &compaction_range_dels);
+    }
+  }
+
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
 
   // Release mutex while we're actually doing the compaction work
@@ -956,9 +966,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       has_current_user_key = false;
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
-      if (!has_current_user_key ||
-          user_comparator()->Compare(ikey.user_key, Slice(current_user_key)) !=
-              0) {
+      if (compaction_range_dels.IsDeleted(ikey.user_key, ikey.sequence,
+                                          kMaxSequenceNumber)) {
+        drop = true;
+      } else if (!has_current_user_key ||
+                 user_comparator()->Compare(ikey.user_key,
+                                            Slice(current_user_key)) != 0) {
         // First occurrence of this user key
         current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
         has_current_user_key = true;
@@ -999,6 +1012,10 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         status = OpenCompactionOutputFile(compact);
         if (!status.ok()) {
           break;
+        }
+        for (const auto& del : compaction_range_dels.GetDeletions()) {
+          InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
+          compact->builder->Add(tombstone_key.Encode(), del.end_key);
         }
       }
       if (compact->builder->NumEntries() == 0) {

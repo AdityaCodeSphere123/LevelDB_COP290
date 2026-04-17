@@ -22,6 +22,8 @@ class RangeDeletionList {
   void Add(const Slice& start, const Slice& end, SequenceNumber seq);
   bool IsDeleted(const Slice& key, SequenceNumber found_seq,
                  SequenceNumber read_seq) const;
+  void MergeInto(const RangeDeletionList* other);
+  const std::vector<RangeDeletion>& GetDeletions() const;
 
  private:
   std::vector<RangeDeletion> deletions_;

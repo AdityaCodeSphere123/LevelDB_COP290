@@ -21,4 +21,17 @@ bool RangeDeletionList::IsDeleted(const Slice& key, SequenceNumber found_seq,
   }
   return false;
 }
+
+void RangeDeletionList::MergeInto(const RangeDeletionList* other) {
+  if (other == nullptr) {
+    return;
+  }
+
+  deletions_.insert(deletions_.end(), other->deletions_.begin(),
+                    other->deletions_.end());
+}
+
+const std::vector<RangeDeletion>& RangeDeletionList::GetDeletions() const {
+  return deletions_;
+}
 }  // namespace leveldb

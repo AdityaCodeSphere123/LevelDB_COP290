@@ -329,4 +329,8 @@ uint64_t Table::ApproximateOffsetOf(const Slice& key) const {
   return result;
 }
 
+RangeDeletionList* Table::GetRangeDeletions() const {
+  return rep_->range_deletions;
+}
+
 }  // namespace leveldb
