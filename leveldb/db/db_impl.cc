@@ -935,6 +935,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   std::string current_user_key;
   bool has_current_user_key = false;
   SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
+
+  bool tombstones_injected = false;
   while (input->Valid() && !shutting_down_.load(std::memory_order_acquire)) {
     // Prioritize immutable compaction work
     if (has_imm_.load(std::memory_order_relaxed)) {
@@ -1013,16 +1015,29 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         if (!status.ok()) {
           break;
         }
-        auto dels = compaction_range_dels.GetDeletions();
-        std::sort(dels.begin(), dels.end(),
-                  [](const RangeDeletion& a, const RangeDeletion& b) {
-                    int cmp = a.start_key.compare(b.start_key);
-                    if (cmp != 0) return cmp < 0;
-                    return a.seq > b.seq;  // Descending sequence numbers
-                  });
-        for (const auto& del : dels) {
-          InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
-          compact->builder->Add(tombstone_key.Encode(), del.end_key);
+
+        if (!tombstones_injected) {
+          auto dels = compaction_range_dels.GetDeletions();
+          std::sort(dels.begin(), dels.end(),
+                    [](const RangeDeletion& a, const RangeDeletion& b) {
+                      int cmp = a.start_key.compare(b.start_key);
+                      if (cmp != 0) return cmp < 0;
+                      return a.seq > b.seq;  // Descending sequence numbers
+                    });
+
+          auto last =
+              std::unique(dels.begin(), dels.end(),
+                          [](const RangeDeletion& a, const RangeDeletion& b) {
+                            return a.start_key == b.start_key && a.seq == b.seq;
+                          });
+          dels.erase(last, dels.end());
+
+          for (const auto& del : dels) {
+            InternalKey tombstone_key(del.start_key, del.seq,
+                                      kTypeRangeDeletion);
+            compact->builder->Add(tombstone_key.Encode(), del.end_key);
+          }
+          tombstones_injected = true;
         }
       }
       if (compact->builder->NumEntries() == 0) {

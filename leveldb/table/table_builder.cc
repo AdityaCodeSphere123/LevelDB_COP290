@@ -99,7 +99,7 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
   Rep* r = rep_;
   assert(!r->closed);
   if (!ok()) return;
-  if (r->num_entries > 0) {
+  if (r->num_entries > 0 && !r->last_key.empty()) {
     assert(r->options.comparator->Compare(key, Slice(r->last_key)) > 0);
   }
 
@@ -110,6 +110,7 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
 
   if (type == kTypeRangeDeletion) {
     r->range_del_block.Add(key, value);
+    r->num_entries++;
     return;
   }
 

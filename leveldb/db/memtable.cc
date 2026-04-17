@@ -114,7 +114,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
   const Slice ikey = key.internal_key();
   SequenceNumber read_seq = DecodeFixed64(ikey.data() + ikey.size() - 8) >> 8;
 
-  if (iter.Valid()) {
+  while (iter.Valid()) {
     // entry format is:
     //    klength  varint32
     //    userkey  char[klength]
@@ -149,8 +149,11 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
           *s = Status::NotFound(Slice());
           return true;
         case kTypeRangeDeletion:
-          break;
+          iter.Next();
+          continue;
       }
+    } else {
+      break;
     }
   }
 

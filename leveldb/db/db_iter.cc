@@ -185,19 +185,27 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
     if (ParseKey(&ikey) && ikey.sequence <= sequence_) {
       switch (ikey.type) {
         case kTypeDeletion:
-        case kTypeRangeDeletion:
-          // Arrange to skip all upcoming entries for this key since
-          // they are hidden by this deletion.
+          // For point deletions, save the key being deleted
           SaveKey(ikey.user_key, skip);
+          skipping = true;
+          break;
+        case kTypeRangeDeletion:
+          // For range deletions, save the END key!
+          // iter_->value() holds the end key of the tombstone.
+          SaveKey(iter_->value(), skip);
           skipping = true;
           break;
         case kTypeValue:
           if (skipping &&
-              user_comparator_->Compare(ikey.user_key, *skip) <= 0) {
-            // Entry hidden
+              user_comparator_->Compare(ikey.user_key, saved_key_) < 0) {
+            // Still mathematically less than the skip target (or end_key),
+            // so we skip it!
           } else {
-            valid_ = true;
+            // We passed the skip target. It's a valid key!
             saved_key_.clear();
+            SaveKey(ikey.user_key, &saved_key_);
+            saved_value_.assign(iter_->value().data(), iter_->value().size());
+            valid_ = true;
             return;
           }
           break;
