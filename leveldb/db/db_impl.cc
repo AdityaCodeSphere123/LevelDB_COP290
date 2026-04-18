@@ -887,7 +887,7 @@ done:
   }
 
   // Always print the report.
-  agg.Print();
+  // agg.Print();
   Log(options_.info_log,
       "ForceFullCompaction: complete. compactions=%lld input_files=%lld "
       "output_files=%lld bytes_read=%lld bytes_written=%lld elapsed=%lld us",
@@ -1505,9 +1505,17 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   it->Seek(start_key);
 
   while (it->Valid() && it->key().compare(end_key) < 0) {
-    // std::fprintf(stderr, "SCAN FOUND: %s\n", it->key().ToString().c_str());
-    result->emplace_back(it->key().ToString(), it->value().ToString());
-    it->Next();
+    std::string value;
+
+    Status s = this->Get(options, it->key(), &value);
+    if (s.ok()) {
+      result->emplace_back(it->key().ToString(), value);
+      it->Next();
+    } else if (s.IsNotFound()) {
+      it->Next();
+    } else {
+      it->Next();
+    }
   }
   Status status = it->status();
 
