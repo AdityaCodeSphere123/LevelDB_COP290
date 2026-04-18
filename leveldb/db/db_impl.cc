@@ -887,7 +887,7 @@ done:
   }
 
   // Always print the report.
-  // agg.Print();
+  agg.Print();
   Log(options_.info_log,
       "ForceFullCompaction: complete. compactions=%lld input_files=%lld "
       "output_files=%lld bytes_read=%lld bytes_written=%lld elapsed=%lld us",
