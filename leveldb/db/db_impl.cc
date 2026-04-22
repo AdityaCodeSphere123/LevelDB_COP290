@@ -820,43 +820,28 @@ Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
     return s;
   }
 
-  // then convergence-wave sweep.
-  // We run waves until a full sweep across all levels finds no files to compact.
-  int wave = 0;
-  while (true) {
-    size_t records_before_wave = records.size();
-    ++wave;
-    Log(options_.info_log, "ForceFullCompaction: wave %d begin", wave);
-
-    for (int level = 0; level + 1 < config::kNumLevels; level++) {
-      {
-        MutexLock l(&mutex_);
-        if (shutting_down_.load(std::memory_order_acquire)) {
-          s = Status::IOError("DB shutting down");
-          goto done;
-        }
-        if (!bg_error_.ok()) {
-          s = bg_error_;
-          goto done;
-        }
-        // If the level is already empty, skip it.
-        if (versions_->NumLevelFiles(level) == 0) {
-          continue;
-        }
-      }
-
-      // CompactLevelFull will drain all files from this level into level+1.
-      s = CompactLevelFull(level);
-      if (!s.ok()) {
+  // exactly one pass over all levels
+  for (int level = 0; level + 1 < config::kNumLevels; level++) {
+    {
+      MutexLock l(&mutex_);
+      if (shutting_down_.load(std::memory_order_acquire)) {
+        s = Status::IOError("DB shutting down");
         goto done;
+      }
+      if (!bg_error_.ok()) {
+        s = bg_error_;
+        goto done;
+      }
+      // If the level is already empty, skip it.
+      if (versions_->NumLevelFiles(level) == 0) {
+        continue;
       }
     }
 
-    Log(options_.info_log, "ForceFullCompaction: wave %d done", wave);
-
-    if (records.size() == records_before_wave) {
-      // A full sweep found no files to compact — the tree is stable.
-      break;
+    // CompactLevelFull will drain all files from this level into level+1.
+    s = CompactLevelFull(level);
+    if (!s.ok()) {
+      goto done;
     }
   }
 
