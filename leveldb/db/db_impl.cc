@@ -702,77 +702,38 @@ Status DBImpl::FlushMemTableSync() {
 }
 Status DBImpl::CompactLevelFull(int level) {
   assert(level >= 0 && level + 1 < config::kNumLevels);
-  while (true) {
-    InternalKey level_begin;
-    InternalKey level_end;
 
-    {
-      MutexLock l(&mutex_);
+  ManualCompaction manual;
+  manual.level = level;
+  manual.done = false;
+  manual.begin = nullptr;
+  manual.end = nullptr;
 
-      if (shutting_down_.load(std::memory_order_acquire)) {
-        return Status::IOError("DB shutting down");
-      }
-      if (!bg_error_.ok()) {
-        return bg_error_;
-      }
-
-      Version* v = versions_->current();
-      const std::vector<FileMetaData*>& files = v->files_at_level(level);
-      if (files.empty()) {
-        return Status::OK();
-      }
-      // get the true global min ormax across all files
-      level_begin = files[0]->smallest;
-      level_end = files[0]->largest;
-
-      for (size_t i = 1; i < files.size(); ++i) {
-        if (internal_comparator_.Compare(files[i]->smallest.Encode(),
-                                         level_begin.Encode()) < 0) {
-          level_begin = files[i]->smallest;
-        }
-        if (internal_comparator_.Compare(files[i]->largest.Encode(),
-                                         level_end.Encode()) > 0) {
-          level_end = files[i]->largest;
-        }
-      }
-    }
-
-    ManualCompaction manual;
-    manual.level = level;
-    manual.done = false;
-    manual.begin = &level_begin;
-    manual.end = &level_end;
-
-    {
-      MutexLock l(&mutex_);
-      while (!manual.done && !shutting_down_.load(std::memory_order_acquire) &&
-             bg_error_.ok()) {
-        if (manual_compaction_ == nullptr) {
-          manual_compaction_ = &manual;
-          MaybeScheduleCompaction();
-        } else {
-          background_work_finished_signal_.Wait();
-        }
-      }
-
-      while (background_compaction_scheduled_ &&
-             !shutting_down_.load(std::memory_order_acquire) &&
-             bg_error_.ok()) {
-        background_work_finished_signal_.Wait();
-      }
-
-      if (manual_compaction_ == &manual) {
-        manual_compaction_ = nullptr;
-      }
-
-      if (shutting_down_.load(std::memory_order_acquire)) {
-        return Status::IOError("DB shutting down");
-      }
-      if (!bg_error_.ok()) {
-        return bg_error_;
-      }
+  MutexLock l(&mutex_);
+  while (!manual.done && !shutting_down_.load(std::memory_order_acquire) &&
+         bg_error_.ok()) {
+    if (manual_compaction_ == nullptr) {
+      manual_compaction_ = &manual;
+      MaybeScheduleCompaction();
+    } else {
+      background_work_finished_signal_.Wait();
     }
   }
+
+  while (background_compaction_scheduled_ &&
+         !shutting_down_.load(std::memory_order_acquire) &&
+         bg_error_.ok()) {
+    background_work_finished_signal_.Wait();
+  }
+
+  if (manual_compaction_ == &manual) {
+    manual_compaction_ = nullptr;
+  }
+
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    return Status::IOError("DB shutting down");
+  }
+  return bg_error_;
 }
 
 
