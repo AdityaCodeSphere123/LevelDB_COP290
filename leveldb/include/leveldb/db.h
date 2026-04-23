@@ -17,6 +17,26 @@
 
 namespace leveldb {
 
+// summarizing activity for all levels and individual compaction rounds.
+struct LEVELDB_EXPORT FullCompactionStats {
+  FullCompactionStats(): 
+        num_compactions(0),
+        num_input_files(0),
+        num_output_files(0),
+        bytes_read(0),
+        bytes_written(0),
+        elapsed_micros(0) {}
+
+  int64_t num_compactions;
+  int64_t num_input_files;
+  int64_t num_output_files;
+  int64_t bytes_read;
+  int64_t bytes_written;
+  int64_t elapsed_micros;
+  void Print() const;
+  std::string ToString() const;
+};
+
 // Update CMakeLists.txt if you change these
 static const int kMajorVersion = 1;
 static const int kMinorVersion = 23;
@@ -96,7 +116,6 @@ class LEVELDB_EXPORT DB {
 
   virtual Status DeleteRange(const WriteOptions& options,
                              const Slice& start_key, const Slice& end_key) = 0;
-  virtual Status ForceFullCompaction() = 0;
 
   // Return a heap-allocated iterator over the contents of the database.
   // The result of NewIterator() is initially invalid (caller must
@@ -156,6 +175,8 @@ class LEVELDB_EXPORT DB {
   // Therefore the following call will compact the entire database:
   //    db->CompactRange(nullptr, nullptr);
   virtual void CompactRange(const Slice* begin, const Slice* end) = 0;
+
+  virtual Status ForceFullCompaction(FullCompactionStats* stats = nullptr)=0;
 };
 
 // Destroy the contents of the specified database.

@@ -110,6 +110,7 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
 
   if (type == kTypeRangeDeletion) {
     r->range_del_block.Add(key, value);
+    r->last_key.assign(key.data(), key.size());
     r->num_entries++;
     return;
   }
