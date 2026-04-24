@@ -28,6 +28,24 @@ class TableCache;
 class Version;
 class VersionEdit;
 class VersionSet;
+struct FullCompactionStats {
+  FullCompactionStats()
+      : num_compactions(0),
+        num_input_files(0),
+        num_output_files(0),
+        bytes_read(0),
+        bytes_written(0),
+        elapsed_micros(0) {}
+
+  int64_t num_compactions;
+  int64_t num_input_files;
+  int64_t num_output_files;
+  int64_t bytes_read;
+  int64_t bytes_written;
+  int64_t elapsed_micros;
+  void Print() const;
+  std::string FormatBytes(int64_t bytes) const;
+};
 
 class DBImpl : public DB {
  public:
