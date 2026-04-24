@@ -9,6 +9,9 @@ leveldb/tester1
 *.so
 *.dylib
 
+tester
+tester1
+
 *.out
 *.exe
 *.app
