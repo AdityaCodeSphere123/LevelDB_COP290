@@ -34,7 +34,7 @@ struct LEVELDB_EXPORT FullCompactionStats {
   int64_t bytes_written;
   int64_t elapsed_micros;
   void Print() const;
-  std::string ToString() const;
+  std::string FormatBytes(int64_t bytes) const;
 };
 
 // Update CMakeLists.txt if you change these
@@ -176,7 +176,7 @@ class LEVELDB_EXPORT DB {
   //    db->CompactRange(nullptr, nullptr);
   virtual void CompactRange(const Slice* begin, const Slice* end) = 0;
 
-  virtual Status ForceFullCompaction(FullCompactionStats* stats = nullptr)=0;
+  virtual Status ForceFullCompaction() = 0;
 };
 
 // Destroy the contents of the specified database.

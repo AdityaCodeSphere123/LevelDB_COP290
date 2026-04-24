@@ -16,6 +16,7 @@
 
 #include "leveldb/db.h"
 #include "leveldb/env.h"
+
 #include "port/port.h"
 #include "port/thread_annotations.h"
 
@@ -57,7 +58,7 @@ class DBImpl : public DB {
   bool GetProperty(const Slice& property, std::string* value) override;
   void GetApproximateSizes(const Range* range, int n, uint64_t* sizes) override;
   void CompactRange(const Slice* begin, const Slice* end) override;
-  Status ForceFullCompaction(FullCompactionStats* stats = nullptr) override;
+  Status ForceFullCompaction() override;
 
   // Extra methods (for testing) that are not in the public DB interface
 
@@ -155,6 +156,10 @@ class DBImpl : public DB {
   WriteBatch* BuildBatchGroup(Writer** last_writer)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
+  bool ShouldWaitFullCompaction() const EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+  Status CheckDatabaseUsable() const EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
   void RecordBackgroundError(const Status& s);
 
   void MaybeScheduleCompaction() EXCLUSIVE_LOCKS_REQUIRED(mutex_);
@@ -171,8 +176,8 @@ class DBImpl : public DB {
   Status InstallCompactionResults(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-  Status FlushMemTableSync();
-  Status CompactLevelFull(int level) LOCKS_EXCLUDED(mutex_);
+  Status FlushedMemTable();
+  Status CompactWholeLevel(int level) LOCKS_EXCLUDED(mutex_);
 
   const Comparator* user_comparator() const {
     return internal_comparator_.user_comparator();
@@ -228,7 +233,8 @@ class DBImpl : public DB {
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
 
   // True while ForceFullCompaction() is running.
-  // Normal writes should wait, and unrelated automatic compactions should not be scheduled during this window.
+  // Normal writes should wait, and unrelated automatic compactions should not
+  // be scheduled during this window.
   bool force_full_compaction_in_progress_ GUARDED_BY(mutex_);
 
   std::vector<SingleCompactionRecord>* ffc_records_ GUARDED_BY(mutex_);
