@@ -1,5 +1,5 @@
 --- leveldb_base/table/table.cc	2026-04-24 22:39:53
-+++ leveldb/table/table.cc	2026-04-24 13:13:15
++++ leveldb/table/table.cc	2026-04-25 00:57:10
 @@ -9,9 +9,11 @@
  #include "leveldb/env.h"
  #include "leveldb/filter_policy.h"
@@ -76,10 +76,12 @@
    delete iter;
    delete meta;
  }
-@@ -131,6 +139,39 @@
+@@ -129,6 +137,39 @@
+     rep_->filter_data = block.data.data();  // Will need to delete later
+   }
    rep_->filter = new FilterBlockReader(rep_->options.filter_policy, block.data);
- }
- 
++}
++
 +void Table::ReadRangeDeletions(const Slice& handle_value) {
 +  Slice v = handle_value;
 +  BlockHandle handle;
@@ -111,24 +113,33 @@
 +  }
 +  delete iter;
 +  delete range_del_block;
-+}
-+
- Table::~Table() { delete rep_; }
+ }
  
- static void DeleteBlock(void* arg, void* ignored) {
-@@ -228,9 +269,29 @@
+ Table::~Table() { delete rep_; }
+@@ -215,6 +256,10 @@
+                           void (*handle_result)(void*, const Slice&,
+                                                 const Slice&)) {
+   Status s;
++  Slice user_key = ExtractUserKey(k);
++  SequenceNumber read_seq = DecodeFixed64(k.data() + k.size() - 8) >> 8;
++  bool point_key_found = false;
++
+   Iterator* iiter = rep_->index_block->NewIterator(rep_->options.comparator);
+   iiter->Seek(k);
+   if (iiter->Valid()) {
+@@ -227,10 +272,29 @@
+     } else {
        Iterator* block_iter = BlockReader(this, options, iiter->value());
        block_iter->Seek(k);
++
        if (block_iter->Valid()) {
 -        (*handle_result)(arg, block_iter->key(), block_iter->value());
-+        Slice user_key = ExtractUserKey(k);
 +        Slice found_user_key = ExtractUserKey(block_iter->key());
-+
 +        if (found_user_key == user_key) {
++          point_key_found = true;
 +          const uint64_t tag = DecodeFixed64(block_iter->key().data() +
 +                                             block_iter->key().size() - 8);
 +          SequenceNumber found_seq = tag >> 8;
-+          SequenceNumber read_seq = DecodeFixed64(k.data() + k.size() - 8) >> 8;
 +
 +          bool deleted = false;
 +          if (rep_->range_deletions != nullptr) {
@@ -148,7 +159,26 @@
        delete block_iter;
      }
    }
-@@ -268,4 +329,8 @@
+@@ -238,9 +302,17 @@
+     s = iiter->status();
+   }
+   delete iiter;
++
++  // check if the requested key is shadowed by a range tombstone in this file!
++  if (!point_key_found && s.ok()) {
++    if (rep_->range_deletions != nullptr &&
++        rep_->range_deletions->IsDeleted(user_key, 0, read_seq)) {
++      s = Status::NotFound(Slice());
++    }
++  }
++
+   return s;
+ }
+-
+ uint64_t Table::ApproximateOffsetOf(const Slice& key) const {
+   Iterator* index_iter =
+       rep_->index_block->NewIterator(rep_->options.comparator);
+@@ -268,4 +340,8 @@
    return result;
  }
  

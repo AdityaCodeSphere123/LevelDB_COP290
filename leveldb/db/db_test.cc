@@ -4,15 +4,14 @@
 
 #include "leveldb/db.h"
 
-#include <atomic>
-#include <cinttypes>
-#include <string>
-#include <thread>
-#include "gtest/gtest.h"
 #include "db/db_impl.h"
 #include "db/filename.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include <atomic>
+#include <cinttypes>
+#include <string>
+#include <thread>
 
 #include "leveldb/cache.h"
 #include "leveldb/env.h"
@@ -26,6 +25,7 @@
 #include "util/mutexlock.h"
 #include "util/testutil.h"
 
+#include "gtest/gtest.h"
 
 namespace leveldb {
 
@@ -2190,9 +2190,7 @@ class ModelDB : public DB {
     }
   }
   void CompactRange(const Slice* start, const Slice* end) override {}
-  Status ForceFullCompaction(FullCompactionStats* stats = nullptr) override {
-    return Status::OK();
-  }
+  Status ForceFullCompaction() override { return Status::OK(); }
 
  private:
   class ModelIter : public Iterator {
@@ -2383,17 +2381,15 @@ TEST_F(DBTest, Randomized) {
 }
 
 TEST_F(DBTest, ForceFullCompactionBasic) {
-  FullCompactionStats stats;
   // Case 1: Empty DB
-  ASSERT_LEVELDB_OK(db_->ForceFullCompaction(&stats));
-  ASSERT_EQ(stats.num_compactions, 0);
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   // Case 2: Single file in L0
   ASSERT_LEVELDB_OK(Put("a", "v1"));
-  ASSERT_LEVELDB_OK(db_->ForceFullCompaction(&stats));
-  ASSERT_GE(stats.num_compactions, 1);
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   ASSERT_EQ(Get("a"), "v1");
-  // After full compaction, everything should be in the last level or at least moved out of L0
+  // After full compaction, everything should be in the last level or at least
+  // moved out of L0
   ASSERT_EQ(NumTableFilesAtLevel(0), 0);
 }
 
@@ -2404,18 +2400,18 @@ TEST_F(DBTest, ForceFullCompactionMultiLevel) {
     dbfull()->TEST_CompactMemTable();
   }
   // Now we have several L0 files.
-  
+
   FullCompactionStats stats;
-  ASSERT_LEVELDB_OK(db_->ForceFullCompaction(&stats));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   ASSERT_GT(stats.num_compactions, 0);
   ASSERT_GT(stats.bytes_read, 0);
   ASSERT_GT(stats.bytes_written, 0);
-  
+
   // Verify data integrity
   for (int i = 0; i < 5; i++) {
     ASSERT_EQ(Get("key" + std::to_string(i)), "value");
   }
-  
+
   // Tree should be stable (L0 empty)
   ASSERT_EQ(NumTableFilesAtLevel(0), 0);
 }
@@ -2435,33 +2431,33 @@ TEST_F(DBTest, ForceFullCompactionIsolation) {
   std::atomic<bool> ffc_started(false);
   std::atomic<bool> write_blocked(false);
   std::atomic<bool> write_finished(false);
-  
-  // Use a delay in data sync to slow down the compaction's FlushMemTableSync (which now does a sync write)
+
+  // Use a delay in data sync to slow down the compaction's FlushMemTableSync
+  // (which now does a sync write)
   env_->delay_data_sync_.store(true, std::memory_order_release);
-  
+
   std::thread ffc_thread([this, &ffc_started]() {
-    FullCompactionStats stats;
     ffc_started.store(true);
-    this->db_->ForceFullCompaction(&stats);
+    this->db_->ForceFullCompaction();
   });
-  
+
   while (!ffc_started.load()) {
     DelayMilliseconds(5);
   }
-  
+
   // Give it time to get stuck in Sync
   DelayMilliseconds(50);
-  
+
   std::thread writer_thread([this, &write_blocked, &write_finished]() {
     write_blocked.store(true);
     this->Put("concurrent", "value");
     write_finished.store(true);
   });
-  
+
   while (!write_blocked.load()) {
     DelayMilliseconds(5);
   }
-  
+
   // Verify writer is blocked while FFC is running and sync is delayed
   bool blocked = true;
   for (int i = 0; i < 20; i++) {
@@ -2471,13 +2467,14 @@ TEST_F(DBTest, ForceFullCompactionIsolation) {
       break;
     }
   }
-  
+
   // Release sync delay to let FFC and then the writer proceed
   env_->delay_data_sync_.store(false, std::memory_order_release);
   ffc_thread.join();
   writer_thread.join();
-  
-  ASSERT_TRUE(blocked) << "Writer thread was not blocked by ForceFullCompaction";
+
+  ASSERT_TRUE(blocked)
+      << "Writer thread was not blocked by ForceFullCompaction";
   ASSERT_EQ(Get("concurrent"), "value");
 }
 
@@ -2488,51 +2485,51 @@ TEST_F(DBTest, ForceFullCompactionConcurrentManual) {
 
   // Fill some data
   MakeTables(3, "a", "z");
-  
+
   std::atomic<bool> manual_started(false);
   std::atomic<bool> manual_finished(false);
-  
+
   // Start a manual compaction and slow it down
   env_->delay_data_sync_.store(true, std::memory_order_release);
-  
+
   std::thread manual_thread([this, &manual_started, &manual_finished]() {
     manual_started.store(true);
     this->Compact("a", "z");
     manual_finished.store(true);
   });
-  
+
   while (!manual_started.load()) {
     DelayMilliseconds(5);
   }
-  
+
   // Give it time to start
   DelayMilliseconds(50);
-  
-  // Now call ForceFullCompaction. It should wait for the manual compaction to finish.
+
+  // Now call ForceFullCompaction. It should wait for the manual compaction to
+  // finish.
   std::atomic<bool> ffc_started(false);
   std::atomic<bool> ffc_finished(false);
   std::thread ffc_thread([this, &ffc_started, &ffc_finished]() {
-    FullCompactionStats stats;
     ffc_started.store(true);
-    this->db_->ForceFullCompaction(&stats);
+    this->db_->ForceFullCompaction();
     ffc_finished.store(true);
   });
-  
+
   while (!ffc_started.load()) {
     DelayMilliseconds(5);
   }
-  
+
   // Check that FFC is blocked
   DelayMilliseconds(500);
   ASSERT_FALSE(manual_finished.load());
   ASSERT_FALSE(ffc_finished.load());
-  
+
   // Release sync delay
   env_->delay_data_sync_.store(false, std::memory_order_release);
-  
+
   manual_thread.join();
   ffc_thread.join();
-  
+
   ASSERT_TRUE(manual_finished.load());
   ASSERT_TRUE(ffc_finished.load());
 }

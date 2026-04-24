@@ -256,6 +256,10 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
                           void (*handle_result)(void*, const Slice&,
                                                 const Slice&)) {
   Status s;
+  Slice user_key = ExtractUserKey(k);
+  SequenceNumber read_seq = DecodeFixed64(k.data() + k.size() - 8) >> 8;
+  bool point_key_found = false;
+
   Iterator* iiter = rep_->index_block->NewIterator(rep_->options.comparator);
   iiter->Seek(k);
   if (iiter->Valid()) {
@@ -268,15 +272,14 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
     } else {
       Iterator* block_iter = BlockReader(this, options, iiter->value());
       block_iter->Seek(k);
-      if (block_iter->Valid()) {
-        Slice user_key = ExtractUserKey(k);
-        Slice found_user_key = ExtractUserKey(block_iter->key());
 
+      if (block_iter->Valid()) {
+        Slice found_user_key = ExtractUserKey(block_iter->key());
         if (found_user_key == user_key) {
+          point_key_found = true;
           const uint64_t tag = DecodeFixed64(block_iter->key().data() +
                                              block_iter->key().size() - 8);
           SequenceNumber found_seq = tag >> 8;
-          SequenceNumber read_seq = DecodeFixed64(k.data() + k.size() - 8) >> 8;
 
           bool deleted = false;
           if (rep_->range_deletions != nullptr) {
@@ -299,9 +302,17 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
     s = iiter->status();
   }
   delete iiter;
+
+  // check if the requested key is shadowed by a range tombstone in this file!
+  if (!point_key_found && s.ok()) {
+    if (rep_->range_deletions != nullptr &&
+        rep_->range_deletions->IsDeleted(user_key, 0, read_seq)) {
+      s = Status::NotFound(Slice());
+    }
+  }
+
   return s;
 }
-
 uint64_t Table::ApproximateOffsetOf(const Slice& key) const {
   Iterator* index_iter =
       rep_->index_block->NewIterator(rep_->options.comparator);

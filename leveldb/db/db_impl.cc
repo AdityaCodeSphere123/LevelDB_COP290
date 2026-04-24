@@ -536,6 +536,24 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   // should not be added to the manifest.
   int level = 0;
   if (s.ok() && meta.file_size > 0) {
+    // FIX 1: Expand bounds to include range tombstones
+    const RangeDeletionList* dels = mem->GetRangeDeletions();
+    if (dels != nullptr) {
+      for (const auto& del : dels->GetDeletions()) {
+        if (meta.smallest.Encode().empty() ||
+            user_comparator()->Compare(del.start_key,
+                                       meta.smallest.user_key()) < 0) {
+          meta.smallest =
+              InternalKey(del.start_key, del.seq, kTypeRangeDeletion);
+        }
+        if (meta.largest.Encode().empty() ||
+            user_comparator()->Compare(del.end_key, meta.largest.user_key()) >
+                0) {
+          meta.largest = InternalKey(del.end_key, 0, kTypeDeletion);
+        }
+      }
+    }
+
     const Slice min_user_key = meta.smallest.user_key();
     const Slice max_user_key = meta.largest.user_key();
     if (base != nullptr) {
@@ -650,11 +668,14 @@ std::string FullCompactionStats::FormatBytes(int64_t bytes) const {
   if (bytes < 1024LL) {
     out << bytes << " B";
   } else if (bytes < 1024LL * 1024) {
-    out << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / 1024.0 << " KiB";
+    out << std::fixed << std::setprecision(2)
+        << static_cast<double>(bytes) / 1024.0 << " KiB";
   } else if (bytes < 1024LL * 1024 * 1024) {
-    out << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / (1024.0 * 1024.0) << " MiB";
+    out << std::fixed << std::setprecision(2)
+        << static_cast<double>(bytes) / (1024.0 * 1024.0) << " MiB";
   } else {
-    out << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0) << " GiB";
+    out << std::fixed << std::setprecision(2)
+        << static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0) << " GiB";
   }
   return out.str();
 }
@@ -677,12 +698,13 @@ Status DBImpl::FlushedMemTable() {
   // Trigger an empty write to force a switch to a new memtable.
   WriteOptions options;
   options.sync = true;
-  Status s = Write(options,nullptr);
+  Status s = Write(options, nullptr);
   if (!s.ok()) return s;
   // Now wait until the immutable memtable (if any) has been flushed.
   MutexLock l(&mutex_);
-  while (imm_ != nullptr && bg_error_.ok() && !shutting_down_.load(std::memory_order_acquire)) {
-      background_work_finished_signal_.Wait();
+  while (imm_ != nullptr && bg_error_.ok() &&
+         !shutting_down_.load(std::memory_order_acquire)) {
+    background_work_finished_signal_.Wait();
   }
   s = CheckDatabaseUsable();
   if (s.ok() == false) {
@@ -702,7 +724,8 @@ Status DBImpl::CompactWholeLevel(int level) {
   manual.tmp_storage.Clear();
 
   MutexLock lock(&mutex_);
-  while (manual.done == false && bg_error_.ok() == true && shutting_down_.load(std::memory_order_acquire) == false) {
+  while (manual.done == false && bg_error_.ok() == true &&
+         shutting_down_.load(std::memory_order_acquire) == false) {
     if (manual_compaction_ == nullptr) {
       manual_compaction_ = &manual;
       MaybeScheduleCompaction();
@@ -721,28 +744,39 @@ Status DBImpl::CompactWholeLevel(int level) {
 
 Status DBImpl::ForceFullCompaction() {
   const uint64_t start_micros = env_->NowMicros();
-
   Status status;
+
+  // Flush the memtable FIRST, before setting the lockdown flag.
+  // This allows normal background compactions to clear L0 if it is full,
+  // which prevents the deadlock where the background thread waits on this flag.
+  status = FlushedMemTable();
+  if (!status.ok()) {
+    return status;
+  }
+
   std::vector<SingleCompactionRecord> records;
   {
     MutexLock lock(&mutex_);
 
+    // NOW it is safe to set the lockdown flag and prevent new writes.
     force_full_compaction_in_progress_ = true;
 
-    while ((background_compaction_scheduled_ == true || manual_compaction_ != nullptr) &&
-           bg_error_.ok() == true && shutting_down_.load(std::memory_order_acquire) == false) {
+    // Wait for any existing background work to clear out
+    while ((background_compaction_scheduled_ == true ||
+            manual_compaction_ != nullptr) &&
+           bg_error_.ok() == true &&
+           shutting_down_.load(std::memory_order_acquire) == false) {
       background_work_finished_signal_.Wait();
     }
 
     status = CheckDatabaseUsable();
-    if (status.ok() == false) {
+    if (!status.ok()) {
       force_full_compaction_in_progress_ = false;
       background_work_finished_signal_.SignalAll();
       return status;
     }
     ffc_records_ = &records;
   }
-
 
   auto FinishFullCompaction = [&]() {
     MutexLock lock(&mutex_);
@@ -754,16 +788,10 @@ Status DBImpl::ForceFullCompaction() {
     force_full_compaction_in_progress_ = false;
     background_work_finished_signal_.SignalAll();
 
-    if (status.ok() == true && bg_error_.ok() == false) {
+    if (status.ok() && !bg_error_.ok()) {
       status = bg_error_;
     }
   };
-
-  status = FlushedMemTable();
-  if (status.ok() == false) {
-    FinishFullCompaction();
-    return status;
-  }
 
   int max_level = 0;
   {
@@ -782,7 +810,7 @@ Status DBImpl::ForceFullCompaction() {
     {
       MutexLock lock(&mutex_);
       status = CheckDatabaseUsable();
-      if (status.ok() == false) {
+      if (!status.ok()) {
         break;
       }
       if (versions_->NumLevelFiles(level) == 0) {
@@ -791,7 +819,7 @@ Status DBImpl::ForceFullCompaction() {
       }
     }
     status = CompactWholeLevel(level);
-    if (status.ok() == false) {
+    if (!status.ok()) {
       break;
     }
     level++;
@@ -802,8 +830,9 @@ Status DBImpl::ForceFullCompaction() {
   const uint64_t end_micros = env_->NowMicros();
 
   FullCompactionStats aggregated_stats;
-  aggregated_stats.elapsed_micros =static_cast<int64_t>(end_micros - start_micros);
-  aggregated_stats.num_compactions =static_cast<int64_t>(records.size());
+  aggregated_stats.elapsed_micros =
+      static_cast<int64_t>(end_micros - start_micros);
+  aggregated_stats.num_compactions = static_cast<int64_t>(records.size());
 
   for (const auto& record : records) {
     aggregated_stats.num_input_files += record.input_files;
@@ -1211,14 +1240,36 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         for (const auto& del : dels) {
           InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
           compact->builder->Add(tombstone_key.Encode(), del.end_key);
+
+          if (compact->current_output()->smallest.Encode().empty() ||
+              user_comparator()->Compare(
+                  del.start_key,
+                  compact->current_output()->smallest.user_key()) < 0) {
+            compact->current_output()->smallest = tombstone_key;
+          }
+          InternalKey end_ikey(del.end_key, 0, kTypeDeletion);
+          if (compact->current_output()->largest.Encode().empty() ||
+              user_comparator()->Compare(
+                  del.end_key, compact->current_output()->largest.user_key()) >
+                  0) {
+            compact->current_output()->largest = end_ikey;
+          }
         }
       }
 
       const Slice key = input->key();
-      if (compact->current_output()->smallest.Encode().empty()) {
+      if (compact->current_output()->smallest.Encode().empty() ||
+          user_comparator()->Compare(
+              ExtractUserKey(key),
+              compact->current_output()->smallest.user_key()) < 0) {
         compact->current_output()->smallest.DecodeFrom(key);
       }
-      compact->current_output()->largest.DecodeFrom(key);
+      if (compact->current_output()->largest.Encode().empty() ||
+          user_comparator()->Compare(
+              ExtractUserKey(key),
+              compact->current_output()->largest.user_key()) > 0) {
+        compact->current_output()->largest.DecodeFrom(key);
+      }
 
       compact->builder->Add(key, input->value());
 
@@ -1447,10 +1498,11 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
       background_work_finished_signal_.Wait();
     }
     Status usable_status = CheckDatabaseUsable();
-    if (usable_status.ok() == false) {
+    if (!usable_status.ok()) {
       return usable_status;
     }
   }
+
   result->clear();
 
   if (start_key.compare(end_key) >= 0) {
@@ -1461,18 +1513,10 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   it->Seek(start_key);
 
   while (it->Valid() && it->key().compare(end_key) < 0) {
-    std::string value;
-
-    Status s = this->Get(options, it->key(), &value);
-    if (s.ok()) {
-      result->emplace_back(it->key().ToString(), value);
-      it->Next();
-    } else if (s.IsNotFound()) {
-      it->Next();
-    } else {
-      it->Next();
-    }
+    result->emplace_back(it->key().ToString(), it->value().ToString());
+    it->Next();
   }
+
   Status status = it->status();
 
   delete it;
@@ -1526,7 +1570,8 @@ Status DBImpl::CheckDatabaseUsable() const {
 bool DBImpl::ShouldWaitFullCompaction() const {
   const bool full_compaction_running = force_full_compaction_in_progress_;
   const bool database_healthy = (bg_error_.ok() == true);
-  const bool database_running = (shutting_down_.load(std::memory_order_acquire) == false);
+  const bool database_running =
+      (shutting_down_.load(std::memory_order_acquire) == false);
   return full_compaction_running && database_healthy && database_running;
 }
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
