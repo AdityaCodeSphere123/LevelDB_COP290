@@ -1,3 +1,9 @@
+tester
+tester1
+
+leveldb/tester
+leveldb/tester1
+
 *.o
 *.a
 *.so
