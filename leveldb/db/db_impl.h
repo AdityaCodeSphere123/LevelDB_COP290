@@ -58,7 +58,7 @@ class DBImpl : public DB {
   bool GetProperty(const Slice& property, std::string* value) override;
   void GetApproximateSizes(const Range* range, int n, uint64_t* sizes) override;
   void CompactRange(const Slice* begin, const Slice* end) override;
-  Status ForceFullCompaction(FullCompactionStats* stats = nullptr) override;
+  Status ForceFullCompaction() override;
 
   // Extra methods (for testing) that are not in the public DB interface
 
@@ -176,8 +176,8 @@ class DBImpl : public DB {
   Status InstallCompactionResults(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-  Status FlushMemTableSync();
-  Status CompactLevelFull(int level) LOCKS_EXCLUDED(mutex_);
+  Status FlushedMemTable();
+  Status CompactWholeLevel(int level) LOCKS_EXCLUDED(mutex_);
 
   const Comparator* user_comparator() const {
     return internal_comparator_.user_comparator();

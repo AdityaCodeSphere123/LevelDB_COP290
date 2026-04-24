@@ -18,7 +18,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <iomanip>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -643,65 +645,54 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
-std::string FullCompactionStats::ToString() const {
-  auto FormatBytes = [](int64_t b) -> std::string {
-    char buf[64];
-    if (b < 1024LL) {
-      std::snprintf(buf, sizeof(buf), "%lld B", static_cast<long long>(b));
-    } else if (b < 1024LL * 1024) {
-      std::snprintf(buf, sizeof(buf), "%.2f KiB",
-                    static_cast<double>(b) / 1024.0);
-    } else if (b < 1024LL * 1024 * 1024) {
-      std::snprintf(buf, sizeof(buf), "%.2f MiB",
-                    static_cast<double>(b) / (1024.0 * 1024));
-    } else {
-      std::snprintf(buf, sizeof(buf), "%.2f GiB",
-                    static_cast<double>(b) / (1024.0 * 1024 * 1024));
-    }
-    return buf;
-  };
-  char buf[1024];
-  std::snprintf(buf, sizeof(buf),
-                "\nForceFullCompaction Report:\n"
-                "Compactions executed: %lld\n"
-                "Input Files: %lld\n"
-                "Output Files: %lld\n"
-                "Bytes Read: %s\n"
-                "Bytes Written: %s\n"
-                "Elapsed Time: %s\n",
-                static_cast<long long>(num_compactions),
-                static_cast<long long>(num_input_files),
-                static_cast<long long>(num_output_files),
-                FormatBytes(bytes_read).c_str(),
-                FormatBytes(bytes_written).c_str(),
-                (std::to_string(elapsed_micros / 1000) + " ms").c_str());
-  return buf;
+std::string FullCompactionStats::FormatBytes(int64_t bytes) const {
+  std::ostringstream out;
+  if (bytes < 1024LL) {
+    out << bytes << " B";
+  } else if (bytes < 1024LL * 1024) {
+    out << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / 1024.0 << " KiB";
+  } else if (bytes < 1024LL * 1024 * 1024) {
+    out << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / (1024.0 * 1024.0) << " MiB";
+  } else {
+    out << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0) << " GiB";
+  }
+  return out.str();
 }
 
 void FullCompactionStats::Print() const {
-  std::string s = ToString();
-  std::fwrite(s.data(), 1, s.size(), stdout);
+  std::ostringstream out;
+
+  out << std::endl << "Compaction Report" << std::endl;
+  out << "Number of compactions executed: " << num_compactions << std::endl;
+  out << "Number of input files: " << num_input_files << std::endl;
+  out << "Number of output files: " << num_output_files << std::endl;
+  out << "Total bytes read: " << FormatBytes(bytes_read) << std::endl;
+  out << "Total bytes written: " << FormatBytes(bytes_written) << std::endl;
+  out << "Elapsed time: " << elapsed_micros / 1000 << " ms" << std::endl;
+  const std::string report = out.str();
+  std::fwrite(report.data(), 1, report.size(), stdout);
   std::fflush(stdout);
 }
-Status DBImpl::FlushMemTableSync() {
+Status DBImpl::FlushedMemTable() {
   // Trigger an empty write to force a switch to a new memtable.
   WriteOptions options;
   options.sync = true;
-  Status s = Write(options, nullptr);
+  Status s = Write(options,nullptr);
   if (!s.ok()) return s;
   // Now wait until the immutable memtable (if any) has been flushed.
   MutexLock l(&mutex_);
-  while (imm_ != nullptr && bg_error_.ok() &&
-         !shutting_down_.load(std::memory_order_acquire)) {
-    background_work_finished_signal_.Wait();
+  while (imm_ != nullptr && bg_error_.ok() && !shutting_down_.load(std::memory_order_acquire)) {
+      background_work_finished_signal_.Wait();
   }
-  if (imm_ != nullptr) {
-    s = bg_error_;
+  s = CheckDatabaseUsable();
+  if (s.ok() == false) {
+    return s;
   }
-  return s;
+  return Status::OK();
 }
-Status DBImpl::CompactLevelFull(int level) {
-  assert(level >= 0 && level + 1 < config::kNumLevels);
+Status DBImpl::CompactWholeLevel(int level) {
+  assert(level >= 0);
+  assert(level + 1 < config::kNumLevels);
 
   ManualCompaction manual;
   manual.level = level;
@@ -710,9 +701,8 @@ Status DBImpl::CompactLevelFull(int level) {
   manual.end = nullptr;
   manual.tmp_storage.Clear();
 
-  MutexLock l(&mutex_);
-  while (!manual.done && !shutting_down_.load(std::memory_order_acquire) &&
-         bg_error_.ok()) {
+  MutexLock lock(&mutex_);
+  while (manual.done == false && bg_error_.ok() == true && shutting_down_.load(std::memory_order_acquire) == false) {
     if (manual_compaction_ == nullptr) {
       manual_compaction_ = &manual;
       MaybeScheduleCompaction();
@@ -720,138 +710,110 @@ Status DBImpl::CompactLevelFull(int level) {
       background_work_finished_signal_.Wait();
     }
   }
-
   while (background_compaction_scheduled_) {
     background_work_finished_signal_.Wait();
   }
-
   if (manual_compaction_ == &manual) {
     manual_compaction_ = nullptr;
   }
-
-  if (shutting_down_.load(std::memory_order_acquire)) {
-    return Status::IOError("DB shutting down");
-  }
-  return bg_error_;
+  return CheckDatabaseUsable();
 }
 
-Status DBImpl::ForceFullCompaction(FullCompactionStats* out_stats) {
+Status DBImpl::ForceFullCompaction() {
   const uint64_t start_micros = env_->NowMicros();
-  Status s;
+
+  Status status;
   std::vector<SingleCompactionRecord> records;
   {
-    MutexLock l(&mutex_);
+    MutexLock lock(&mutex_);
+
     force_full_compaction_in_progress_ = true;
-    while (
-        (background_compaction_scheduled_ || manual_compaction_ != nullptr) &&
-        bg_error_.ok() && !shutting_down_.load(std::memory_order_acquire)) {
+
+    while ((background_compaction_scheduled_ == true || manual_compaction_ != nullptr) &&
+           bg_error_.ok() == true && shutting_down_.load(std::memory_order_acquire) == false) {
       background_work_finished_signal_.Wait();
     }
 
-    if (shutting_down_.load(std::memory_order_acquire)) {
+    status = CheckDatabaseUsable();
+    if (status.ok() == false) {
       force_full_compaction_in_progress_ = false;
       background_work_finished_signal_.SignalAll();
-      return Status::IOError("DB shutting down");
+      return status;
     }
-    if (!bg_error_.ok()) {
-      s = bg_error_;
-      force_full_compaction_in_progress_ = false;
-      background_work_finished_signal_.SignalAll();
-      return s;
-    }
-
     ffc_records_ = &records;
   }
 
-  Log(options_.info_log, "ForceFullCompaction: starting");
 
-  // first flush memtable so all data is on disk.
-  s = FlushMemTableSync();
-  if (!s.ok()) {
-    MutexLock l(&mutex_);
+  auto FinishFullCompaction = [&]() {
+    MutexLock lock(&mutex_);
+
     if (ffc_records_ == &records) {
       ffc_records_ = nullptr;
     }
+
     force_full_compaction_in_progress_ = false;
     background_work_finished_signal_.SignalAll();
-    return s;
+
+    if (status.ok() == true && bg_error_.ok() == false) {
+      status = bg_error_;
+    }
+  };
+
+  status = FlushedMemTable();
+  if (status.ok() == false) {
+    FinishFullCompaction();
+    return status;
   }
 
-  // Compute max level with files first, then only compact up to that
   int max_level = 0;
   {
-    MutexLock l(&mutex_);
-    for (int level = 0; level + 1 < config::kNumLevels; level++) {
+    MutexLock lock(&mutex_);
+    int level = 0;
+    while (level + 1 < config::kNumLevels) {
       if (versions_->NumLevelFiles(level) > 0) {
         max_level = level;
       }
+      level++;
     }
   }
 
-  for (int level = 0; level < max_level; level++) {
+  int level = 0;
+  while (level < max_level) {
     {
-      MutexLock l(&mutex_);
-      if (shutting_down_.load(std::memory_order_acquire)) {
-        s = Status::IOError("DB shutting down");
-        goto done;
-      }
-      if (!bg_error_.ok()) {
-        s = bg_error_;
-        goto done;
+      MutexLock lock(&mutex_);
+      status = CheckDatabaseUsable();
+      if (status.ok() == false) {
+        break;
       }
       if (versions_->NumLevelFiles(level) == 0) {
+        level++;
         continue;
       }
     }
-
-    // CompactLevelFull will drain all files from this level into level+1.
-    s = CompactLevelFull(level);
-    if (!s.ok()) {
-      goto done;
+    status = CompactWholeLevel(level);
+    if (status.ok() == false) {
+      break;
     }
+    level++;
   }
 
-done: {
-  MutexLock l(&mutex_);
-  if (ffc_records_ == &records) {
-    ffc_records_ = nullptr;
-  }
-  force_full_compaction_in_progress_ = false;
-  background_work_finished_signal_.SignalAll();
-  if (s.ok() && !bg_error_.ok()) {
-    s = bg_error_;
-  }
-}
+  FinishFullCompaction();
 
   const uint64_t end_micros = env_->NowMicros();
 
-  // Aggregate individual records into FullCompactionStats.
-  FullCompactionStats agg;
-  agg.elapsed_micros = static_cast<int64_t>(end_micros - start_micros);
-  agg.num_compactions = static_cast<int64_t>(records.size());
-  for (const auto& r : records) {
-    agg.num_input_files += r.input_files;
-    agg.num_output_files += r.output_files;
-    agg.bytes_read += r.bytes_read;
-    agg.bytes_written += r.bytes_written;
+  FullCompactionStats aggregated_stats;
+  aggregated_stats.elapsed_micros =static_cast<int64_t>(end_micros - start_micros);
+  aggregated_stats.num_compactions =static_cast<int64_t>(records.size());
+
+  for (const auto& record : records) {
+    aggregated_stats.num_input_files += record.input_files;
+    aggregated_stats.num_output_files += record.output_files;
+    aggregated_stats.bytes_read += record.bytes_read;
+    aggregated_stats.bytes_written += record.bytes_written;
   }
 
-  // Always print the report.
-  agg.Print();
-  Log(options_.info_log,
-      "ForceFullCompaction: complete. compactions=%lld input_files=%lld "
-      "output_files=%lld bytes_read=%lld bytes_written=%lld elapsed=%lld us",
-      static_cast<long long>(agg.num_compactions),
-      static_cast<long long>(agg.num_input_files),
-      static_cast<long long>(agg.num_output_files),
-      static_cast<long long>(agg.bytes_read),
-      static_cast<long long>(agg.bytes_written),
-      static_cast<long long>(agg.elapsed_micros));
-
-  if (out_stats != nullptr) {
-    *out_stats = agg;
-  }
-  return s;
+  aggregated_stats.Print();
+  return status;
 }
 Status DBImpl::TEST_CompactMemTable() {
   // nullptr batch means just wait for earlier writes to be done
@@ -869,7 +831,6 @@ Status DBImpl::TEST_CompactMemTable() {
   }
   return s;
 }
-
 void DBImpl::RecordBackgroundError(const Status& s) {
   mutex_.AssertHeld();
   if (bg_error_.ok()) {
@@ -1565,8 +1526,7 @@ Status DBImpl::CheckDatabaseUsable() const {
 bool DBImpl::ShouldWaitFullCompaction() const {
   const bool full_compaction_running = force_full_compaction_in_progress_;
   const bool database_healthy = (bg_error_.ok() == true);
-  const bool database_running =
-      (shutting_down_.load(std::memory_order_acquire) == false);
+  const bool database_running = (shutting_down_.load(std::memory_order_acquire) == false);
   return full_compaction_running && database_healthy && database_running;
 }
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {

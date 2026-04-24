@@ -23,7 +23,8 @@ bin/
 .DS_Store
 ._*
 .vscode/
-
+tester/
+tester1/
 testdb/
 *.ldb
 *.log
