@@ -3,6 +3,9 @@
 *.so
 *.dylib
 
+tester
+tester1
+
 *.out
 *.exe
 *.app
