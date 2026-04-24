@@ -1413,14 +1413,13 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
   Status s;
   MutexLock l(&mutex_);
 
-  while (force_full_compaction_in_progress_ && bg_error_.ok() &&
-         !shutting_down_.load(std::memory_order_acquire)) {
+  while (ShouldWaitFullCompaction()) {
     background_work_finished_signal_.Wait();
   }
   // If we woke up because of an error or shutdown, abort the read
-  if (!bg_error_.ok()) return bg_error_;
-  if (shutting_down_.load(std::memory_order_acquire)) {
-    return Status::IOError("DB shutting down");
+  Status usable_status = CheckDatabaseUsable();
+  if (usable_status.ok() == false) {
+    return usable_status;
   }
 
   SequenceNumber snapshot;
@@ -1483,13 +1482,12 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
                     std::vector<std::pair<std::string, std::string>>* result) {
   {
     MutexLock l(&mutex_);
-    while (force_full_compaction_in_progress_ && bg_error_.ok() &&
-           !shutting_down_.load(std::memory_order_acquire)) {
+    while (ShouldWaitFullCompaction()) {
       background_work_finished_signal_.Wait();
     }
-    if (!bg_error_.ok()) return bg_error_;
-    if (shutting_down_.load(std::memory_order_acquire)) {
-      return Status::IOError("DB shutting down");
+    Status usable_status = CheckDatabaseUsable();
+    if (usable_status.ok() == false) {
+      return usable_status;
     }
   }
   result->clear();
@@ -1555,7 +1553,22 @@ Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
 }
-
+Status DBImpl::CheckDatabaseUsable() const {
+  if (bg_error_.ok() == false) {
+    return bg_error_;
+  }
+  if (shutting_down_.load(std::memory_order_acquire) == true) {
+    return Status::IOError("Database is shutting down");
+  }
+  return Status::OK();
+}
+bool DBImpl::ShouldWaitFullCompaction() const {
+  const bool full_compaction_running = force_full_compaction_in_progress_;
+  const bool database_healthy = (bg_error_.ok() == true);
+  const bool database_running =
+      (shutting_down_.load(std::memory_order_acquire) == false);
+  return full_compaction_running && database_healthy && database_running;
+}
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   Writer w(&mutex_);
   w.batch = updates;
@@ -1563,22 +1576,16 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   w.done = false;
 
   MutexLock l(&mutex_);
-
   // Block new foreground writes while ForceFullCompaction() is running.
   // Internal nullptr writes used by ForceFullCompaction()/tests are still
   // allowed so they can flush the memtable synchronously.
-  while (updates != nullptr && force_full_compaction_in_progress_ &&
-         bg_error_.ok() && !shutting_down_.load(std::memory_order_acquire)) {
+  while (updates != nullptr && ShouldWaitFullCompaction()) {
     background_work_finished_signal_.Wait();
   }
-
-  if (!bg_error_.ok()) {
-    return bg_error_;
+  Status usable_status = CheckDatabaseUsable();
+  if (usable_status.ok() == false) {
+    return usable_status;
   }
-  if (shutting_down_.load(std::memory_order_acquire)) {
-    return Status::IOError("DB shutting down");
-  }
-
   writers_.push_back(&w);
   while (!w.done && &w != writers_.front()) {
     w.cv.Wait();
@@ -1595,7 +1602,10 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     WriteBatch* write_batch = BuildBatchGroup(&last_writer);
     WriteBatchInternal::SetSequence(write_batch, last_sequence + 1);
     last_sequence += WriteBatchInternal::Count(write_batch);
-
+    // Add to log and apply to memtable.  We can release the lock
+    // during this phase since &w is currently responsible for logging
+    // and protects against concurrent loggers and concurrent writes
+    // into mem_.
     {
       mutex_.Unlock();
       status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
@@ -1611,6 +1621,9 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
       }
       mutex_.Lock();
       if (sync_error) {
+        // The state of the log file is indeterminate: the log record we
+        // just added may or may not show up when the DB is re-opened.
+        // So we force the DB into a mode where all future writes fail.
         RecordBackgroundError(status);
       }
     }
@@ -1629,7 +1642,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     }
     if (ready == last_writer) break;
   }
-
+  // Notify new head of write queue
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
   }
