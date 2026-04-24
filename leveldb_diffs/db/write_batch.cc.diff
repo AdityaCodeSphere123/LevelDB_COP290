@@ -1,0 +1,52 @@
+--- leveldb_base/db/write_batch.cc	2026-04-24 22:39:53
++++ leveldb/db/write_batch.cc	2026-04-24 13:13:15
+@@ -18,7 +18,9 @@
+ #include "db/dbformat.h"
+ #include "db/memtable.h"
+ #include "db/write_batch_internal.h"
++
+ #include "leveldb/db.h"
++
+ #include "util/coding.h"
+ 
+ namespace leveldb {
+@@ -68,6 +70,14 @@
+           return Status::Corruption("bad WriteBatch Delete");
+         }
+         break;
++      case kTypeRangeDeletion:
++        if (GetLengthPrefixedSlice(&input, &key) &&
++            GetLengthPrefixedSlice(&input, &value)) {
++          handler->DeleteRange(key, value);
++        } else {
++          return Status::Corruption("bad WriteBatch DeleteRange");
++        }
++        break;
+       default:
+         return Status::Corruption("unknown WriteBatch tag");
+     }
+@@ -108,6 +118,13 @@
+   PutLengthPrefixedSlice(&rep_, key);
+ }
+ 
++void WriteBatch::DeleteRange(const Slice& start_key, const Slice& end_key) {
++  WriteBatchInternal::SetCount(this, WriteBatchInternal::Count(this) + 1);
++  rep_.push_back(static_cast<char>(kTypeRangeDeletion));
++  PutLengthPrefixedSlice(&rep_, start_key);
++  PutLengthPrefixedSlice(&rep_, end_key);
++}
++
+ void WriteBatch::Append(const WriteBatch& source) {
+   WriteBatchInternal::Append(this, &source);
+ }
+@@ -126,6 +143,10 @@
+     mem_->Add(sequence_, kTypeDeletion, key, Slice());
+     sequence_++;
+   }
++  void DeleteRange(const Slice& start_key, const Slice& end_key) override {
++    mem_->Add(sequence_, kTypeRangeDeletion, start_key, end_key);
++    sequence_++;
++  }
+ };
+ }  // namespace
+ 
