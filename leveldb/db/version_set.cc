@@ -262,14 +262,19 @@ static void SaveValue(void* arg, const Slice& ikey, const Slice& v) {
     s->state = kCorrupt;
   } else {
     if (s->ucmp->Compare(parsed_key.user_key, s->user_key) == 0) {
-      if (parsed_key.type == kTypeValue) {
-        s->state = kFound;
-      } else if (parsed_key.type == kTypeDeletion) {
-        s->state = kDeleted;
-      } else if (parsed_key.type == kTypeRangeDeletion) {
-        s->state = kDeletedByRange;  // Halt search for this key
-      } else {
-        s->state = kCorrupt;
+      switch (parsed_key.type) {
+        case kTypeValue:
+          s->state = kFound;
+          break;
+        case kTypeDeletion:
+          s->state = kDeleted;
+          break;
+        case kTypeRangeDeletion:
+          s->state = kDeletedByRange; // Halt search for this key
+          break;
+        default:
+          s->state = kCorrupt;
+          break;
       }
       if (s->state == kFound) {
         s->value->assign(v.data(), v.size());
