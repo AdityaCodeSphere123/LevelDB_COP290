@@ -28,8 +28,8 @@ class TableCache;
 class Version;
 class VersionEdit;
 class VersionSet;
-struct FullCompactionStats {
-  FullCompactionStats()
+struct StatsForCompaction {
+  StatsForCompaction()
       : num_compactions(0),
         num_input_files(0),
         num_output_files(0),

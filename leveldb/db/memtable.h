@@ -11,7 +11,6 @@
 
 #include "leveldb/db.h"
 
-#include "table/range_deletion.h"
 #include "util/arena.h"
 
 namespace leveldb {

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "leveldb/comparator.h"
 #include "leveldb/db.h"
@@ -223,6 +224,24 @@ class LookupKey {
 inline LookupKey::~LookupKey() {
   if (start_ != space_) delete[] start_;
 }
+struct RangeDeletion {
+  std::string start_key;
+  std::string end_key;
+  SequenceNumber seq;
+};
+class RangeDeletionList {
+ public:
+  RangeDeletionList() = default;
+
+  void Add(const Slice& start, const Slice& end, SequenceNumber seq);
+  bool IsDeleted(const Slice& key, SequenceNumber found_seq,
+                 SequenceNumber read_seq) const;
+  void MergeInto(const RangeDeletionList* other);
+  const std::vector<RangeDeletion>& GetDeletions() const;
+
+ private:
+  std::vector<RangeDeletion> deletions_;
+};
 
 }  // namespace leveldb
 

@@ -13,7 +13,7 @@
 #include "table/block.h"
 #include "table/filter_block.h"
 #include "table/format.h"
-#include "table/range_deletion.h"
+#include "db/dbformat.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
 

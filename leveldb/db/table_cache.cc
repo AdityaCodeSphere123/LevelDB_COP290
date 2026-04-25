@@ -9,7 +9,7 @@
 #include "leveldb/env.h"
 #include "leveldb/table.h"
 
-#include "table/range_deletion.h"
+#include "db/dbformat.h"
 #include "util/coding.h"
 
 namespace leveldb {

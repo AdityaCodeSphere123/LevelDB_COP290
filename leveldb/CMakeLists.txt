@@ -166,8 +166,6 @@ target_sources(leveldb
     "table/iterator.cc"
     "table/merger.cc"
     "table/merger.h"
-    "table/range_deletion.cc"
-    "table/range_deletion.h"
     "table/table_builder.cc"
     "table/table.cc"
     "table/two_level_iterator.cc"

@@ -33,7 +33,6 @@
 #include "port/port.h"
 #include "table/block.h"
 #include "table/merger.h"
-#include "table/range_deletion.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
 #include "util/logging.h"
@@ -663,7 +662,7 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
     manual_compaction_ = nullptr;
   }
 }
-std::string FullCompactionStats::FormatBytes(int64_t bytes) const {
+std::string StatsForCompaction::FormatBytes(int64_t bytes) const {
   std::ostringstream out;
   if (bytes < 1024LL) {
     out << bytes << " B";
@@ -680,7 +679,7 @@ std::string FullCompactionStats::FormatBytes(int64_t bytes) const {
   return out.str();
 }
 
-void FullCompactionStats::Print() const {
+void StatsForCompaction::Print() const {
   std::ostringstream out;
 
   out << std::endl << "Compaction Report" << std::endl;
@@ -829,7 +828,7 @@ Status DBImpl::ForceFullCompaction() {
 
   const uint64_t end_micros = env_->NowMicros();
 
-  FullCompactionStats aggregated_stats;
+  StatsForCompaction aggregated_stats;
   aggregated_stats.elapsed_micros =
       static_cast<int64_t>(end_micros - start_micros);
   aggregated_stats.num_compactions = static_cast<int64_t>(records.size());

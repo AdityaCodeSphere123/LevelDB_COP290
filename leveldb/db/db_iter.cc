@@ -12,7 +12,6 @@
 #include "leveldb/iterator.h"
 
 #include "port/port.h"
-#include "table/range_deletion.h"  // Added for RangeDeletionList
 #include "util/logging.h"
 #include "util/mutexlock.h"
 #include "util/random.h"
