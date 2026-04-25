@@ -806,7 +806,7 @@ Status DBImpl::ForceFullCompaction() {
   }
 
   int level = 0;
-  while (level < max_level) {
+  while (level <= max_level) {
     {
       MutexLock lock(&mutex_);
       status = CheckDatabaseUsable();
@@ -940,7 +940,7 @@ void DBImpl::BackgroundCompaction() {
   Status status;
   if (c == nullptr) {
     // Nothing to do
-  } else if (!is_manual && c->IsTrivialMove()) {
+  } else if (c->IsTrivialMove()) {
     // Move file to next level
     assert(c->num_input_files(0) == 1);
     FileMetaData* f = c->input(0, 0);
@@ -956,6 +956,15 @@ void DBImpl::BackgroundCompaction() {
         static_cast<unsigned long long>(f->number), c->level() + 1,
         static_cast<unsigned long long>(f->file_size),
         status.ToString().c_str(), versions_->LevelSummary(&tmp));
+
+    if (ffc_records_ != nullptr) {
+      SingleCompactionRecord rec;
+      rec.input_files = 1;
+      rec.output_files = 1;
+      rec.bytes_read = f->file_size;
+      rec.bytes_written = f->file_size;
+      ffc_records_->push_back(rec);
+    }
   } else {
     CompactionState* compact = new CompactionState(c);
     status = DoCompactionWork(compact);
