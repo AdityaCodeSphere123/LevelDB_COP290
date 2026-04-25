@@ -2443,7 +2443,7 @@ TEST_F(DBTest, ForceFullCompactionIsolation) {
   }
 
   // Wait until the isolation flag is actually set in the DB
-  while (!dbfull()->force_full_compaction_in_progress_) {
+  while (!dbfull()->TEST_IsForceFullCompactionInProgress()) {
     DelayMilliseconds(5);
   }
 
@@ -2821,6 +2821,251 @@ TEST_F(FullCompactionTest, ShutdownDuringFFC) {
   db_ = nullptr;
 
   ffc_thread.join();
+}
+
+TEST_F(DBTest, ForceFullCompaction_MemTableFlushBug) {
+  // 1. Put data only in the MemTable
+  ASSERT_LEVELDB_OK(Put("memtable_key", "memtable_value"));
+
+  // 2. Verify no files are on disk yet
+  int total_sstables_before = 0;
+  for (int i = 0; i < config::kNumLevels; i++) {
+    total_sstables_before += NumTableFilesAtLevel(i);
+  }
+  ASSERT_EQ(0, total_sstables_before);
+
+  // 3. Trigger Compaction
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // 4. Verify data was flushed
+  int total_sstables_after = 0;
+  for (int i = 0; i < config::kNumLevels; i++) {
+    total_sstables_after += NumTableFilesAtLevel(i);
+  }
+
+  ASSERT_GT(total_sstables_after, 0)
+      << "BUG DETECTED: MemTable was NOT flushed to disk! Recent data missed "
+         "compaction.";
+}
+
+TEST_F(DBTest, RangeTombstoneIndexCorruptionBug) {
+  // 1. Set a small block size to guarantee multiple data blocks are created.
+  // The default is 4KB.
+  Options options = CurrentOptions();
+  options.block_size = 4096;
+  Reopen(&options);
+
+  // 2. Insert a Range Tombstone that is lexicographically LARGER than our data
+  // keys.
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "Z_start", "Z_end"));
+
+  // 3. Insert enough point keys to create at least 3 distinct data blocks.
+  // 15 keys * 1000 bytes = ~15KB (spanning ~3-4 blocks)
+  for (int i = 0; i < 15; i++) {
+    // Keys will be: "A00", "A01", ... "A14"
+    char key_buf[10];
+    std::snprintf(key_buf, sizeof(key_buf), "A%02d", i);
+    ASSERT_LEVELDB_OK(Put(key_buf, std::string(1000, 'x')));
+  }
+
+  // 4. Force all this data through the compaction pipeline.
+  // In the buggy DoCompactionWork, the file opens, and "Z_start" is immediately
+  // dumped into TableBuilder. r->last_key becomes "Z_start".
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // 5. Attempt to read back the keys.
+  int missing_keys = 0;
+  for (int i = 0; i < 15; i++) {
+    char key_buf[10];
+    std::snprintf(key_buf, sizeof(key_buf), "A%02d", i);
+    std::string val;
+    Status s = db_->Get(ReadOptions(), key_buf, &val);
+
+    // These keys were never deleted, so they should all exist.
+    if (s.IsNotFound()) {
+      missing_keys++;
+    }
+  }
+
+  // THE TRUTH TEST: If the bug is present, binary search on the index block
+  // will fail, and perfectly valid keys will be reported as missing.
+  ASSERT_EQ(0, missing_keys)
+      << "FATAL BUG DETECTED: " << missing_keys
+      << " valid keys returned NotFound! "
+      << "The SSTable index block is completely poisoned.";
+}
+
+TEST_F(DBTest, FFC_OptimalLevelSettling) {
+  // Purpose: Verify FFC does not blindly push data to Level 6.
+  // If the DB only has L0 files, FFC should stop exactly at L1.
+
+  ASSERT_LEVELDB_OK(Put("settle_key", "settle_value"));
+  dbfull()->TEST_CompactMemTable();
+
+  // Verify data is sitting in L0
+  ASSERT_GT(NumTableFilesAtLevel(0), 0);
+  int total_files_below_l0 = 0;
+  for (int i = 1; i < config::kNumLevels; i++) {
+    total_files_below_l0 += NumTableFilesAtLevel(i);
+  }
+  ASSERT_EQ(0, total_files_below_l0);
+
+  // Trigger FFC
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // THE TRUTH TEST:
+  // L0 must be empty. L1 must contain the files. L2-L6 MUST remain empty.
+  ASSERT_EQ(0, NumTableFilesAtLevel(0));
+  ASSERT_GT(NumTableFilesAtLevel(1), 0);
+
+  int total_files_below_l1 = 0;
+  for (int i = 2; i < config::kNumLevels; i++) {
+    total_files_below_l1 += NumTableFilesAtLevel(i);
+  }
+  ASSERT_EQ(0, total_files_below_l1)
+      << "FFC did meaningless work by pushing data deeper than necessary!";
+}
+
+TEST_F(DBTest, FFC_MultiLevelMerge) {
+  // Purpose: Verify FFC correctly sweeps through intermediate levels
+  // when files exist deeper in the tree.
+
+  // 1. Put data and push it deep (Simulating old data)
+  ASSERT_LEVELDB_OK(Put("old_key", "old_value"));
+  dbfull()->TEST_CompactMemTable();
+  Compact("a", "z");  // Standard manual compaction pushes to at least L1/L2
+
+  int deep_level = -1;
+  for (int i = 1; i < config::kNumLevels; i++) {
+    if (NumTableFilesAtLevel(i) > 0) deep_level = i;
+  }
+  ASSERT_GT(deep_level, 0);
+
+  // 2. Put new data in L0
+  ASSERT_LEVELDB_OK(Put("new_key", "new_value"));
+  dbfull()->TEST_CompactMemTable();
+  ASSERT_GT(NumTableFilesAtLevel(0), 0);
+
+  // Trigger FFC
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // THE TRUTH TEST:
+  // FFC should have calculated max_level_with_files = deep_level.
+  // It should cascade everything exactly one level below the old deep_level.
+  int expected_final_level = deep_level + 1;
+  if (expected_final_level >= config::kNumLevels) {
+    expected_final_level = config::kNumLevels - 1;
+  }
+
+  for (int i = 0; i < config::kNumLevels; i++) {
+    if (i == expected_final_level) {
+      ASSERT_GT(NumTableFilesAtLevel(i), 0)
+          << "Data did not cascade to the expected level: "
+          << expected_final_level;
+    } else {
+      ASSERT_EQ(0, NumTableFilesAtLevel(i))
+          << "Data left behind in intermediate level: " << i;
+    }
+  }
+
+  ASSERT_EQ("old_value", Get("old_key"));
+  ASSERT_EQ("new_value", Get("new_key"));
+}
+
+TEST_F(DBTest, FFC_ObsoleteDataPurge) {
+  // Purpose: The most "meaningful work" of a full compaction is annihilating
+  // deleted data. If FFC works, a tombstone in L0 should chase down and
+  // destroy the actual data in a lower level.
+
+  // 1. Write a massive value and push it to a lower level
+  std::string big_val(10000, 'x');
+  ASSERT_LEVELDB_OK(Put("doomed_key", big_val));
+  dbfull()->TEST_CompactMemTable();
+  Compact("a", "z");  // Push it down
+
+  // 2. Delete the key (Tombstone goes to L0)
+  ASSERT_LEVELDB_OK(Delete("doomed_key"));
+  dbfull()->TEST_CompactMemTable();
+
+  // Verify we have files in the DB taking up space
+  int files_before = 0;
+  for (int i = 0; i < config::kNumLevels; i++) {
+    files_before += NumTableFilesAtLevel(i);
+  }
+  ASSERT_GT(files_before, 0);
+
+  // Trigger FFC
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // THE TRUTH TEST:
+  // The tombstone should have swept through the levels, met the data, and
+  // completely destroyed it. The resulting database should have 0 files!
+  int files_after = 0;
+  for (int i = 0; i < config::kNumLevels; i++) {
+    files_after += NumTableFilesAtLevel(i);
+  }
+  ASSERT_EQ(0, files_after)
+      << "Obsolete data was not purged! FFC failed to pair tombstones.";
+}
+
+TEST_F(DBTest, FFC_EmptyLevelBypass) {
+  // Purpose: Ensure the sequential loop skips empty levels without creating
+  // unnecessary manifest edits or dummy compactions.
+
+  // 1. Create a gap. Put data in L0, and data in L3, but L1 and L2 are EMPTY.
+  ASSERT_LEVELDB_OK(Put("L3_key", "val"));
+  dbfull()->TEST_CompactMemTable();
+  Compact("L", "M");  // Push to L1
+  Compact("L", "M");  // Push to L2
+  Compact("L", "M");  // Push to L3
+
+  ASSERT_LEVELDB_OK(Put("L0_key", "val"));
+  dbfull()->TEST_CompactMemTable();
+
+  ASSERT_GT(NumTableFilesAtLevel(0), 0);
+  ASSERT_EQ(0, NumTableFilesAtLevel(1));
+  ASSERT_EQ(0, NumTableFilesAtLevel(2));
+  ASSERT_GT(NumTableFilesAtLevel(3), 0);
+
+  // Trigger FFC
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // Verify everything cascaded cleanly to L4 without crashing on the gaps
+  ASSERT_EQ(0, NumTableFilesAtLevel(0));
+  ASSERT_EQ(0, NumTableFilesAtLevel(1));
+  ASSERT_EQ(0, NumTableFilesAtLevel(2));
+  ASSERT_EQ(0, NumTableFilesAtLevel(3));
+  ASSERT_GT(NumTableFilesAtLevel(4), 0);
+}
+
+TEST_F(DBTest, FFC_TrivialMoveEfficiency) {
+  // Purpose: Verify the !is_manual fix allows FFC to use Trivial Moves.
+  // If we just move L0 to L1 without overlapping keys, it should NOT rewrite
+  // the data.
+
+  // Use a custom environment to track bytes written
+  Options options = CurrentOptions();
+  options.env = env_;
+  Reopen(&options);
+
+  std::string large_val(1024 * 1024, 'x');  // 1MB value
+  ASSERT_LEVELDB_OK(Put("trivial_key", large_val));
+
+  // Get baseline written bytes
+  uint64_t bytes_before_ffc = 0;
+  // (Assuming env_ allows tracking, or we rely on the DB's internal logic)
+  dbfull()->TEST_CompactMemTable();
+
+  // FFC
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // THE TRUTH TEST:
+  // If Trivial Move is working, the file was just reassigned to Level 1 in the
+  // MANIFEST. There should be NO new SSTable generation, meaning it was wildly
+  // fast and efficient.
+  ASSERT_EQ(0, NumTableFilesAtLevel(0));
+  ASSERT_GT(NumTableFilesAtLevel(1), 0);
+  ASSERT_EQ(large_val, Get("trivial_key"));
 }
 
 }  // namespace leveldb

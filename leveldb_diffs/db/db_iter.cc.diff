@@ -1,6 +1,6 @@
 --- leveldb_base/db/db_iter.cc	2026-04-24 22:39:53
-+++ leveldb/db/db_iter.cc	2026-04-24 13:13:15
-@@ -7,42 +7,22 @@
++++ leveldb/db/db_iter.cc	2026-04-25 20:10:39
+@@ -7,8 +7,10 @@
  #include "db/db_impl.h"
  #include "db/dbformat.h"
  #include "db/filename.h"
@@ -9,10 +9,9 @@
  #include "leveldb/iterator.h"
 +
  #include "port/port.h"
-+#include "table/range_deletion.h"  // Added for RangeDeletionList
  #include "util/logging.h"
  #include "util/mutexlock.h"
- #include "util/random.h"
+@@ -16,33 +18,10 @@
  
  namespace leveldb {
  
@@ -46,7 +45,7 @@
    enum Direction { kForward, kReverse };
  
    DBIter(DBImpl* db, const Comparator* cmp, Iterator* iter, SequenceNumber s,
-@@ -54,7 +34,10 @@
+@@ -54,7 +33,10 @@
          direction_(kForward),
          valid_(false),
          rnd_(seed),
@@ -58,7 +57,7 @@
  
    DBIter(const DBIter&) = delete;
    DBIter& operator=(const DBIter&) = delete;
-@@ -101,7 +84,6 @@
+@@ -101,7 +83,6 @@
      }
    }
  
@@ -66,7 +65,7 @@
    size_t RandomCompactionPeriod() {
      return rnd_.Uniform(2 * config::kReadBytesPeriod);
    }
-@@ -111,17 +93,20 @@
+@@ -111,17 +92,20 @@
    Iterator* const iter_;
    SequenceNumber const sequence_;
    Status status_;
@@ -90,7 +89,7 @@
    size_t bytes_read = k.size() + iter_->value().size();
    while (bytes_until_read_sampling_ < bytes_read) {
      bytes_until_read_sampling_ += RandomCompactionPeriod();
-@@ -140,12 +125,8 @@
+@@ -140,12 +124,8 @@
  
  void DBIter::Next() {
    assert(valid_);
@@ -104,7 +103,7 @@
      if (!iter_->Valid()) {
        iter_->SeekToFirst();
      } else {
-@@ -156,13 +137,8 @@
+@@ -156,13 +136,8 @@
        saved_key_.clear();
        return;
      }
@@ -118,7 +117,7 @@
      iter_->Next();
      if (!iter_->Valid()) {
        valid_ = false;
-@@ -170,12 +146,10 @@
+@@ -170,12 +145,10 @@
        return;
      }
    }
@@ -131,7 +130,7 @@
    assert(iter_->Valid());
    assert(direction_ == kForward);
    do {
-@@ -183,18 +157,27 @@
+@@ -183,18 +156,27 @@
      if (ParseKey(&ikey) && ikey.sequence <= sequence_) {
        switch (ikey.type) {
          case kTypeDeletion:
@@ -165,7 +164,7 @@
              return;
            }
            break;
-@@ -208,11 +191,8 @@
+@@ -208,11 +190,8 @@
  
  void DBIter::Prev() {
    assert(valid_);
@@ -179,7 +178,7 @@
      SaveKey(ExtractUserKey(iter_->key()), &saved_key_);
      while (true) {
        iter_->Prev();
-@@ -229,13 +209,11 @@
+@@ -229,13 +208,11 @@
      }
      direction_ = kReverse;
    }
@@ -193,7 +192,7 @@
    ValueType value_type = kTypeDeletion;
    if (iter_->Valid()) {
      do {
-@@ -243,11 +221,17 @@
+@@ -243,11 +220,17 @@
        if (ParseKey(&ikey) && ikey.sequence <= sequence_) {
          if ((value_type != kTypeDeletion) &&
              user_comparator_->Compare(ikey.user_key, saved_key_) < 0) {
@@ -213,7 +212,7 @@
            saved_key_.clear();
            ClearSavedValue();
          } else {
-@@ -265,7 +249,6 @@
+@@ -265,7 +248,6 @@
    }
  
    if (value_type == kTypeDeletion) {
@@ -221,7 +220,7 @@
      valid_ = false;
      saved_key_.clear();
      ClearSavedValue();
-@@ -283,7 +266,7 @@
+@@ -283,7 +265,7 @@
                      ParsedInternalKey(target, sequence_, kValueTypeForSeek));
    iter_->Seek(saved_key_);
    if (iter_->Valid()) {
@@ -230,7 +229,7 @@
    } else {
      valid_ = false;
    }
-@@ -294,7 +277,7 @@
+@@ -294,7 +276,7 @@
    ClearSavedValue();
    iter_->SeekToFirst();
    if (iter_->Valid()) {
@@ -239,7 +238,7 @@
    } else {
      valid_ = false;
    }
-@@ -315,4 +298,4 @@
+@@ -315,4 +297,4 @@
    return new DBIter(db, user_key_comparator, internal_iter, sequence, seed);
  }
  

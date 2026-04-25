@@ -99,6 +99,7 @@ class DBImpl : public DB {
   // Samples are taken approximately once every config::kReadBytesPeriod
   // bytes.
   void RecordReadSample(Slice key);
+  bool TEST_IsForceFullCompactionInProgress();
 
  private:
   friend class DB;

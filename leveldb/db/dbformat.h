@@ -64,7 +64,7 @@ enum ValueType {
 // and the value type is embedded as the low 8 bits in the sequence
 // number in internal keys, we need to use the highest-numbered
 // ValueType, not the lowest).
-static const ValueType kValueTypeForSeek = kTypeValue;
+static const ValueType kValueTypeForSeek = kTypeRangeDeletion;
 
 typedef uint64_t SequenceNumber;
 
@@ -165,6 +165,8 @@ class InternalKey {
   }
 
   void Clear() { rep_.clear(); }
+
+  bool empty() const { return rep_.empty(); }
 
   std::string DebugString() const;
 };

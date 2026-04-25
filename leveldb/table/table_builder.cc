@@ -104,15 +104,15 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
   }
 
   size_t n = key.size();
-  assert(n >= 8);
-  const uint64_t tag = DecodeFixed64(key.data() + n - 8);
-  ValueType type = static_cast<ValueType>(tag & 0xff);
+  if (n >= 8) {
+    const uint64_t tag = DecodeFixed64(key.data() + n - 8);
+    ValueType type = static_cast<ValueType>(tag & 0xff);
 
-  if (type == kTypeRangeDeletion) {
-    r->range_del_block.Add(key, value);
-    r->last_key.assign(key.data(), key.size());
-    r->num_entries++;
-    return;
+    if (type == kTypeRangeDeletion) {
+      r->range_del_block.Add(key, value);
+      r->num_entries++;
+      return;
+    }
   }
 
   if (r->pending_index_entry) {

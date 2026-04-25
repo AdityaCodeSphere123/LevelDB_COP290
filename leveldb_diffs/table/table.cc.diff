@@ -1,5 +1,5 @@
 --- leveldb_base/table/table.cc	2026-04-24 22:39:53
-+++ leveldb/table/table.cc	2026-04-25 00:57:10
++++ leveldb/table/table.cc	2026-04-25 20:10:39
 @@ -9,9 +9,11 @@
  #include "leveldb/env.h"
  #include "leveldb/filter_policy.h"
@@ -8,7 +8,7 @@
  #include "table/block.h"
  #include "table/filter_block.h"
  #include "table/format.h"
-+#include "table/range_deletion.h"
++#include "db/dbformat.h"
  #include "table/two_level_iterator.h"
  #include "util/coding.h"
  

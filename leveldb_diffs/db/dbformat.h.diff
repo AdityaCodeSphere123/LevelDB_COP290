@@ -1,6 +1,13 @@
 --- leveldb_base/db/dbformat.h	2026-04-24 22:39:53
-+++ leveldb/db/dbformat.h	2026-04-24 13:13:15
-@@ -14,6 +14,7 @@
++++ leveldb/db/dbformat.h	2026-04-25 22:59:31
+@@ -8,12 +8,14 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <string>
++#include <vector>
+ 
+ #include "leveldb/comparator.h"
+ #include "leveldb/db.h"
  #include "leveldb/filter_policy.h"
  #include "leveldb/slice.h"
  #include "leveldb/table_builder.h"
@@ -8,7 +15,7 @@
  #include "util/coding.h"
  #include "util/logging.h"
  
-@@ -51,7 +52,11 @@
+@@ -51,14 +53,18 @@
  // Value types encoded as the last component of internal keys.
  // DO NOT CHANGE THESE ENUM VALUES: they are embedded in the on-disk
  // data structures.
@@ -21,7 +28,24 @@
  // kValueTypeForSeek defines the ValueType that should be passed when
  // constructing a ParsedInternalKey object for seeking to a particular
  // sequence number (since we sort sequence numbers in decreasing order
-@@ -177,7 +182,7 @@
+ // and the value type is embedded as the low 8 bits in the sequence
+ // number in internal keys, we need to use the highest-numbered
+ // ValueType, not the lowest).
+-static const ValueType kValueTypeForSeek = kTypeValue;
++static const ValueType kValueTypeForSeek = kTypeRangeDeletion;
+ 
+ typedef uint64_t SequenceNumber;
+ 
+@@ -160,6 +166,8 @@
+ 
+   void Clear() { rep_.clear(); }
+ 
++  bool empty() const { return rep_.empty(); }
++
+   std::string DebugString() const;
+ };
+ 
+@@ -177,7 +185,7 @@
    result->sequence = num >> 8;
    result->type = static_cast<ValueType>(c);
    result->user_key = Slice(internal_key.data(), n - 8);
@@ -30,3 +54,29 @@
  }
  
  // A helper class useful for DBImpl::Get()
+@@ -218,7 +226,25 @@
+ inline LookupKey::~LookupKey() {
+   if (start_ != space_) delete[] start_;
+ }
++struct RangeDeletion {
++  std::string start_key;
++  std::string end_key;
++  SequenceNumber seq;
++};
++class RangeDeletionList {
++ public:
++  RangeDeletionList() = default;
+ 
++  void Add(const Slice& start, const Slice& end, SequenceNumber seq);
++  bool IsDeleted(const Slice& key, SequenceNumber found_seq,
++                 SequenceNumber read_seq) const;
++  void MergeInto(const RangeDeletionList* other);
++  const std::vector<RangeDeletion>& GetDeletions() const;
++
++ private:
++  std::vector<RangeDeletion> deletions_;
++};
++
+ }  // namespace leveldb
+ 
+ #endif  // STORAGE_LEVELDB_DB_DBFORMAT_H_

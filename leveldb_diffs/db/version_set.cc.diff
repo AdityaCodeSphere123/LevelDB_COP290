@@ -1,5 +1,5 @@
 --- leveldb_base/db/version_set.cc	2026-04-24 22:39:53
-+++ leveldb/db/version_set.cc	2026-04-25 00:54:55
++++ leveldb/db/version_set.cc	2026-04-25 20:10:39
 @@ -4,16 +4,17 @@
  
  #include "db/version_set.h"
@@ -35,24 +35,29 @@
  struct Saver {
    SaverState state;
    const Comparator* ucmp;
-@@ -266,7 +262,15 @@
+@@ -266,7 +262,20 @@
      s->state = kCorrupt;
    } else {
      if (s->ucmp->Compare(parsed_key.user_key, s->user_key) == 0) {
 -      s->state = (parsed_key.type == kTypeValue) ? kFound : kDeleted;
-+      if (parsed_key.type == kTypeValue) {
-+        s->state = kFound;
-+      } else if (parsed_key.type == kTypeDeletion) {
-+        s->state = kDeleted;
-+      } else if (parsed_key.type == kTypeRangeDeletion) {
-+        s->state = kDeletedByRange;  // Halt search for this key
-+      } else {
-+        s->state = kCorrupt;
++      switch (parsed_key.type) {
++        case kTypeValue:
++          s->state = kFound;
++          break;
++        case kTypeDeletion:
++          s->state = kDeleted;
++          break;
++        case kTypeRangeDeletion:
++          s->state = kDeletedByRange; // Halt search for this key
++          break;
++        default:
++          s->state = kCorrupt;
++          break;
 +      }
        if (s->state == kFound) {
          s->value->assign(v.data(), v.size());
        }
-@@ -365,6 +369,7 @@
+@@ -365,6 +374,7 @@
            state->found = true;
            return false;
          case kDeleted:
