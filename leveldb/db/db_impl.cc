@@ -4,14 +4,6 @@
 
 #include "db/db_impl.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
-#include <set>
-#include <string>
-#include <vector>
-
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
@@ -22,8 +14,15 @@
 #include "db/table_cache.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <iomanip>
+#include <set>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include "leveldb/db.h"
 #include "leveldb/env.h"
@@ -758,7 +757,10 @@ Status DBImpl::ForceFullCompaction() {
   {
     MutexLock lock(&mutex_);
 
-    // NOW it is safe to set the lockdown flag and prevent new writes.
+    // Ensure we don't proceed if another thread already set the flag.
+    while (force_full_compaction_in_progress_) {
+      background_work_finished_signal_.Wait();
+    }
     force_full_compaction_in_progress_ = true;
 
     // Wait for any existing background work to clear out
@@ -793,20 +795,9 @@ Status DBImpl::ForceFullCompaction() {
     }
   };
 
-  int max_level = 0;
-  {
-    MutexLock lock(&mutex_);
-    int level = 0;
-    while (level + 1 < config::kNumLevels) {
-      if (versions_->NumLevelFiles(level) > 0) {
-        max_level = level;
-      }
-      level++;
-    }
-  }
-
+  // Iterate through all levels.
   int level = 0;
-  while (level <= max_level) {
+  while (level < config::kNumLevels - 1) {
     {
       MutexLock lock(&mutex_);
       status = CheckDatabaseUsable();

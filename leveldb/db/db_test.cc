@@ -2384,7 +2384,6 @@ TEST_F(DBTest, ForceFullCompactionBasic) {
   // Case 1: Empty DB
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
-
   // Case 2: Single file in L0
   ASSERT_LEVELDB_OK(Put("a", "v1"));
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
@@ -2404,7 +2403,6 @@ TEST_F(DBTest, ForceFullCompactionMultiLevel) {
   // Now we have several L0 files.
 
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
-
 
   // Verify data integrity
   for (int i = 0; i < 5; i++) {
@@ -2444,8 +2442,10 @@ TEST_F(DBTest, ForceFullCompactionIsolation) {
     DelayMilliseconds(5);
   }
 
-  // Give it time to get stuck in Sync
-  DelayMilliseconds(50);
+  // Wait until the isolation flag is actually set in the DB
+  while (!dbfull()->force_full_compaction_in_progress_) {
+    DelayMilliseconds(5);
+  }
 
   std::thread writer_thread([this, &write_blocked, &write_finished]() {
     write_blocked.store(true);
@@ -2531,6 +2531,33 @@ TEST_F(DBTest, ForceFullCompactionConcurrentManual) {
 
   ASSERT_TRUE(manual_finished.load());
   ASSERT_TRUE(ffc_finished.load());
+}
+
+TEST_F(DBTest, ForceFullCompaction_Level0Only_BugHunt) {
+  // 1. Write a single key-value pair to the database.
+  ASSERT_LEVELDB_OK(Put("isolate_key", "isolate_value"));
+
+  // 2. Force the MemTable to flush.
+  // LevelDB's PickLevelForMemTableOutput may push a single file to higher
+  // levels if there is no overlap. We loop to ensure we actually have an L0
+  // file.
+  int count = 0;
+  while (NumTableFilesAtLevel(0) == 0 && count < 100) {
+    ASSERT_LEVELDB_OK(Put("isolate_key", "isolate_value"));
+    dbfull()->TEST_CompactMemTable();
+    count++;
+  }
+
+  // Verify our starting state: we have at least one file in L0.
+  ASSERT_GT(NumTableFilesAtLevel(0), 0);
+
+  // 3. Trigger the manual full compaction.
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // 4. THE TRUTH TEST: Level 0 should now be empty.
+  ASSERT_EQ(NumTableFilesAtLevel(0), 0);
+  // Verify data wasn't destroyed
+  ASSERT_EQ(Get("isolate_key"), "isolate_value");
 }
 
 class FullCompactionTest : public testing::Test {
@@ -2690,6 +2717,110 @@ TEST_F(FullCompactionTest, InterleavedCompactionRequests) {
   }
   for (auto& t : threads) t.join();
   EXPECT_EQ(3, compaction_count.load());
+}
+
+TEST_F(FullCompactionTest, HighConcurrencyStress) {
+  std::atomic<bool> stop(false);
+  std::atomic<int> ops_completed(0);
+  std::vector<std::thread> workers;
+
+  // 1. Start background workers doing various operations
+  for (int i = 0; i < 5; i++) {
+    workers.emplace_back([&, i]() {
+      int local_ops = 0;
+      while (!stop.load()) {
+        std::string key =
+            "key_" + std::to_string(i) + "_" + std::to_string(local_ops % 100);
+        if (local_ops % 3 == 0) {
+          db_->Put(WriteOptions(), key, "value");
+        } else if (local_ops % 3 == 1) {
+          std::string v;
+          db_->Get(ReadOptions(), key, &v);
+        } else {
+          db_->DeleteRange(WriteOptions(), key, key + "z");
+        }
+        local_ops++;
+        ops_completed++;
+        if (local_ops % 10 == 0)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    });
+  }
+
+  // 2. Start threads that periodically trigger ForceFullCompaction
+  std::vector<std::thread> compactors;
+  for (int i = 0; i < 2; i++) {
+    compactors.emplace_back([&]() {
+      for (int j = 0; j < 2; j++) {
+        db_->ForceFullCompaction();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    });
+  }
+
+  // 3. Let it run for a few seconds
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  stop = true;
+  for (auto& t : workers) t.join();
+  for (auto& t : compactors) t.join();
+
+  ASSERT_GT(ops_completed.load(), 0);
+  // Verify DB is still usable
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "final", "check"));
+  std::string v;
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "final", &v));
+  ASSERT_EQ(v, "check");
+}
+
+TEST_F(FullCompactionTest, CompactionPreemptionRace) {
+  // This test aims to trigger a race where a background compaction starts
+  // just as ForceFullCompaction is beginning its wait loop.
+
+  for (int i = 0; i < 10; i++) {
+    // Fill some data to trigger auto-compaction
+    for (int j = 0; j < 100; j++) {
+      Put("key_" + std::to_string(j), std::string(1000, 'x'));
+    }
+
+    // Launch FFC in a thread
+    std::thread ffc_thread([&]() { db_->ForceFullCompaction(); });
+
+    // Launch a manual compaction for a specific range in another thread
+    std::thread manual_thread([&]() {
+      Slice start("key_0");
+      Slice end("key_50");
+      reinterpret_cast<DBImpl*>(db_)->CompactRange(&start, &end);
+    });
+
+    ffc_thread.join();
+    manual_thread.join();
+
+    ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "test", "ok"));
+  }
+}
+
+TEST_F(FullCompactionTest, ShutdownDuringFFC) {
+  // 1. Prepare data
+  for (int i = 0; i < 50; i++) {
+    Put("key_" + std::to_string(i), std::string(1000, 'x'));
+  }
+
+  std::atomic<bool> ffc_started(false);
+  std::thread ffc_thread([&]() {
+    ffc_started = true;
+    db_->ForceFullCompaction();
+  });
+
+  while (!ffc_started) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  // 2. Shutdown immediately
+  delete db_;
+  db_ = nullptr;
+
+  ffc_thread.join();
 }
 
 }  // namespace leveldb
