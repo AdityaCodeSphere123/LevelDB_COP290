@@ -558,6 +558,9 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
 
     const Slice min_user_key = meta.smallest.user_key();
     const Slice max_user_key = meta.largest.user_key();
+    if (dels != nullptr && !dels->GetDeletions().empty()) {
+      level = 0;
+    }
     if (base != nullptr) {
       level = base->PickLevelForMemTableOutput(min_user_key, max_user_key);
     }
@@ -824,6 +827,10 @@ Status DBImpl::ForceFullCompaction() {
       }
     }
 
+    if (level == max_level_with_files && level > 0) {
+      break;
+    }
+
     // Triggers sequential compaction
     status = CompactWholeLevel(level);
 
@@ -947,7 +954,8 @@ void DBImpl::BackgroundCompaction() {
   Status status;
   if (c == nullptr) {
     // Nothing to do
-  } else if (!is_manual && c->IsTrivialMove()) {
+  } else if ((!is_manual || force_full_compaction_in_progress_) &&
+             c->IsTrivialMove()) {
     // Move file to next level
     assert(c->num_input_files(0) == 1);
     FileMetaData* f = c->input(0, 0);
@@ -1206,7 +1214,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
       if (compaction_range_dels.IsDeleted(ikey.user_key, ikey.sequence,
-                                          kMaxSequenceNumber)) {
+                                          compact->smallest_snapshot)) {
         drop = true;
       } else if (!has_current_user_key ||
                  user_comparator()->Compare(ikey.user_key,
@@ -1253,26 +1261,34 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
           break;
         }
 
+        // 1. Write the tombstones into the block
         for (const auto& del : dels) {
           InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
           compact->builder->Add(tombstone_key.Encode(), del.end_key);
+        }
 
+        // 2. ONLY stretch the 'smallest' boundary if this is the VERY FIRST
+        // file
+        if (compact->outputs.empty() && !dels.empty()) {
+          Slice min_start = dels[0].start_key;
+          SequenceNumber min_seq = dels[0].seq;
+          for (const auto& del : dels) {
+            if (user_comparator()->Compare(del.start_key, min_start) < 0) {
+              min_start = del.start_key;
+              min_seq = del.seq;
+            }
+          }
+          InternalKey min_tombstone_key(min_start, min_seq, kTypeRangeDeletion);
           if (compact->current_output()->smallest.empty() ||
               user_comparator()->Compare(
-                  del.start_key,
-                  compact->current_output()->smallest.user_key()) < 0) {
-            compact->current_output()->smallest = tombstone_key;
-          }
-          InternalKey end_ikey(del.end_key, 0, kTypeDeletion);
-          if (compact->current_output()->largest.empty() ||
-              user_comparator()->Compare(
-                  del.end_key, compact->current_output()->largest.user_key()) >
+                  min_start, compact->current_output()->smallest.user_key()) <
                   0) {
-            compact->current_output()->largest = end_ikey;
+            compact->current_output()->smallest = min_tombstone_key;
           }
         }
-      }
+      }  // <--- THIS CLOSES THE FILE CREATION BLOCK
 
+      // --- POINT KEYS ARE PROCESSED HERE, OUTSIDE THE CREATION BLOCK ---
       const Slice key = input->key();
       if (compact->current_output()->smallest.empty() ||
           user_comparator()->Compare(
@@ -1300,34 +1316,61 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     }
 
     input->Next();
-  }
+  }  // <--- THIS CLOSES THE MAIN while(input->Valid()) LOOP
 
   if (status.ok() && shutting_down_.load(std::memory_order_acquire)) {
     status = Status::IOError("Deleting DB during compaction");
   }
+
+  // 3. Stretch the 'largest' boundary on the final file before closing it
+  if (status.ok() && compact->builder != nullptr && !dels.empty()) {
+    Slice max_end = dels[0].end_key;
+    for (const auto& del : dels) {
+      if (user_comparator()->Compare(del.end_key, max_end) > 0) {
+        max_end = del.end_key;
+      }
+    }
+    InternalKey end_ikey(max_end, 0, kTypeDeletion);
+    if (compact->current_output()->largest.empty() ||
+        user_comparator()->Compare(
+            max_end, compact->current_output()->largest.user_key()) > 0) {
+      compact->current_output()->largest = end_ikey;
+    }
+  }
+
+  // THE MISSING FINISHER: Actually close the file containing point keys!
   if (status.ok() && compact->builder != nullptr) {
     status = FinishCompactionOutputFile(compact, input);
   }
+
+  // Fallback: If ZERO point keys survived, but we still have tombstones to
+  // write
   if (status.ok() && compact->builder == nullptr && !dels.empty() &&
       compact->outputs.empty()) {
     status = OpenCompactionOutputFile(compact);
     if (status.ok()) {
+      Slice min_start = dels[0].start_key;
+      SequenceNumber min_seq = dels[0].seq;
+      Slice max_end = dels[0].end_key;
+
       for (const auto& del : dels) {
         InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
         compact->builder->Add(tombstone_key.Encode(), del.end_key);
 
-        // No point keys, so we MUST use tombstone boundaries
-        if (compact->current_output()->smallest.empty()) {
-          compact->current_output()->smallest = tombstone_key;
+        if (user_comparator()->Compare(del.start_key, min_start) < 0) {
+          min_start = del.start_key;
+          min_seq = del.seq;
         }
-        InternalKey end_ikey(del.end_key, 0, kTypeDeletion);
-        if (compact->current_output()->largest.empty() ||
-            user_comparator()->Compare(
-                del.end_key, compact->current_output()->largest.user_key()) >
-                0) {
-          compact->current_output()->largest = end_ikey;
+        if (user_comparator()->Compare(del.end_key, max_end) > 0) {
+          max_end = del.end_key;
         }
       }
+
+      compact->current_output()->smallest =
+          InternalKey(min_start, min_seq, kTypeRangeDeletion);
+      compact->current_output()->largest =
+          InternalKey(max_end, 0, kTypeDeletion);
+
       status = FinishCompactionOutputFile(compact, input);
     }
   }
@@ -1444,11 +1487,6 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
   while (ShouldWaitFullCompaction()) {
     background_work_finished_signal_.Wait();
   }
-  // If we woke up because of an error or shutdown, abort the read
-  Status usable_status = CheckDatabaseUsable();
-  if (usable_status.ok() == false) {
-    return usable_status;
-  }
 
   SequenceNumber snapshot;
   if (options.snapshot != nullptr) {
@@ -1499,11 +1537,6 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
     while (ShouldWaitFullCompaction()) {
       background_work_finished_signal_.Wait();
     }
-
-    Status usable_status = CheckDatabaseUsable();
-    if (!usable_status.ok()) {
-      return NewEmptyIterator();
-    }
   }
   SequenceNumber latest_snapshot;
   uint32_t seed;
@@ -1523,10 +1556,6 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
     MutexLock l(&mutex_);
     while (ShouldWaitFullCompaction()) {
       background_work_finished_signal_.Wait();
-    }
-    Status usable_status = CheckDatabaseUsable();
-    if (!usable_status.ok()) {
-      return usable_status;
     }
   }
 
@@ -1613,10 +1642,6 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   // allowed so they can flush the memtable synchronously.
   while (updates != nullptr && ShouldWaitFullCompaction()) {
     background_work_finished_signal_.Wait();
-  }
-  Status usable_status = CheckDatabaseUsable();
-  if (usable_status.ok() == false) {
-    return usable_status;
   }
   writers_.push_back(&w);
   while (!w.done && &w != writers_.front()) {
@@ -1966,18 +1991,27 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
   return result;
 }
 void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
-  MutexLock l(&mutex_);
+  mutex_.Lock();
   if (mem_) list->MergeInto(mem_->GetRangeDeletions());
   if (imm_) list->MergeInto(imm_->GetRangeDeletions());
+
   if (versions_ && versions_->current()) {
     Version* current = versions_->current();
+    current->Ref();  // Protect the version while we drop the lock
+
+    mutex_.Unlock();
+
     for (int level = 0; level < config::kNumLevels; level++) {
       for (size_t i = 0; i < current->files_[level].size(); i++) {
         FileMetaData* f = current->files_[level][i];
         table_cache_->GetRangeDeletions(f->number, f->file_size, list);
       }
     }
+
+    mutex_.Lock();
+    current->Unref();
   }
+  mutex_.Unlock();
 }
 
 bool DBImpl::TEST_IsForceFullCompactionInProgress() {

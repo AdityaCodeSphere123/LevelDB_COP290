@@ -9,13 +9,14 @@
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
+#include <filesystem>
 #include <string>
 #include <thread>
-#include <chrono>
 #include <unistd.h>
-#include <atomic>
-#include <filesystem>
+
+#include "leveldb/cache.h"
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/table.h"
@@ -2427,6 +2428,12 @@ TEST_F(DBTest, ForceFullCompactionIsolation) {
   }
   dbfull()->TEST_CompactMemTable();
 
+  // ADD THIS SECOND WAVE: Force an overlap so data stays in L0!
+  for (int i = 0; i < 200; i++) {
+    ASSERT_LEVELDB_OK(Put("key" + std::to_string(i), std::string(1000, 'y')));
+  }
+  dbfull()->TEST_CompactMemTable();
+
   std::atomic<bool> ffc_started(false);
   std::atomic<bool> write_blocked(false);
   std::atomic<bool> write_finished(false);
@@ -3141,16 +3148,17 @@ TEST_F(FullCompactionTest, T01_EmptyDB) {
   StdoutCapture cap;
   Status s = db_->ForceFullCompaction();
   std::string out = cap.Finish();
-  ASSERT_OK(s);
-  ASSERT_TRUE(out.find("Number of compactions executed: 0") != std::string::npos);
+  ASSERT_LEVELDB_OK(s);
+  ASSERT_TRUE(out.find("Number of compactions executed: 0") !=
+              std::string::npos);
   ASSERT_TRUE(out.find("Number of input files: 0") != std::string::npos);
   ASSERT_TRUE(out.find("Number of output files: 0") != std::string::npos);
 }
 
 // T02: FFC called twice in succession on an empty DB — both must succeed.
 TEST_F(FullCompactionTest, T02_EmptyDB_TwiceCalls) {
-  ASSERT_OK(db_->ForceFullCompaction());
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 }
 
 // GROUP 2 — Data only in MemTable (never flushed)
@@ -3159,18 +3167,18 @@ TEST_F(FullCompactionTest, T02_EmptyDB_TwiceCalls) {
 //      After FFC the data must still be readable and at least one SST exists.
 TEST_F(FullCompactionTest, T03_DataOnlyInMemtable) {
   WriteOptions wo;
-  ASSERT_OK(db_->Put(wo, "alpha", "1"));
-  ASSERT_OK(db_->Put(wo, "beta",  "2"));
-  ASSERT_OK(db_->Put(wo, "gamma", "3"));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "alpha", "1"));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "beta", "2"));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "gamma", "3"));
 
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   std::string val;
-  ASSERT_OK(db_->Get(ReadOptions(), "alpha", &val));
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "alpha", &val));
   ASSERT_EQ(val, "1");
-  ASSERT_OK(db_->Get(ReadOptions(), "beta",  &val));
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "beta", &val));
   ASSERT_EQ(val, "2");
-  ASSERT_OK(db_->Get(ReadOptions(), "gamma", &val));
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "gamma", &val));
   ASSERT_EQ(val, "3");
 }
 
@@ -3180,15 +3188,15 @@ TEST_F(FullCompactionTest, T03_DataOnlyInMemtable) {
 //      After FFC, L0 must be empty (data pushed down).
 TEST_F(FullCompactionTest, T04_DataInL0_FlushedDown) {
   // Write 500 keys × 1 KiB each → triggers multiple L0 flushes.
-  ASSERT_OK(FillRandom(500));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(500));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   ASSERT_EQ(FilesAtLevel(0), 0);
 }
 
 // T05: After FFC L0 is empty, all written keys must still be readable.
 TEST_F(FullCompactionTest, T05_DataInL0_ReadabilityAfterFFC) {
-  ASSERT_OK(FillRandom(200));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(200));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   ReadOptions ro;
   std::string val;
@@ -3196,7 +3204,7 @@ TEST_F(FullCompactionTest, T05_DataInL0_ReadabilityAfterFFC) {
   for (int i = 0; i < 200; i += 20) {
     char key[32];
     std::snprintf(key, sizeof(key), "key%08d", i);
-    ASSERT_OK(db_->Get(ro, key, &val));
+    ASSERT_LEVELDB_OK(db_->Get(ro, key, &val));
     ASSERT_EQ(val, std::string(1024, 'x'));
   }
 }
@@ -3207,12 +3215,12 @@ TEST_F(FullCompactionTest, T05_DataInL0_ReadabilityAfterFFC) {
 //      Stats must show ≥ 1 compaction and > 0 bytes read/written.
 TEST_F(FullCompactionTest, T06_MultiLevel_StatsCorrect) {
   // 2000 keys × 1 KiB → ~2 MiB; forces compaction into L2 area.
-  ASSERT_OK(FillRandom(2000));
+  ASSERT_LEVELDB_OK(FillRandom(2000));
 
   StdoutCapture cap;
   Status s = db_->ForceFullCompaction();
   std::string out = cap.Finish();
-  ASSERT_OK(s);
+  ASSERT_LEVELDB_OK(s);
 
   // num_compactions must be at least 1
   auto extractNum = [&](const std::string& label) -> long long {
@@ -3235,23 +3243,23 @@ TEST_F(FullCompactionTest, T06_MultiLevel_StatsCorrect) {
 
 // T07: After FFC on multi-level DB, L0 is empty.
 TEST_F(FullCompactionTest, T07_MultiLevel_L0EmptyAfterFFC) {
-  ASSERT_OK(FillRandom(2000));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(2000));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   ASSERT_EQ(FilesAtLevel(0), 0);
 }
 
 // T08: After FFC all data must still be correct (large dataset).
 TEST_F(FullCompactionTest, T08_MultiLevel_DataCorrectAfterFFC) {
   const int N = 1000;
-  ASSERT_OK(FillRandom(N));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(N));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   ReadOptions ro;
   std::string val;
   for (int i = 0; i < N; i += 50) {
     char key[32];
     std::snprintf(key, sizeof(key), "key%08d", i);
-    ASSERT_OK(db_->Get(ro, key, &val));
+    ASSERT_LEVELDB_OK(db_->Get(ro, key, &val));
     ASSERT_EQ(val, std::string(1024, 'x'));
   }
 }
@@ -3266,11 +3274,11 @@ TEST_F(FullCompactionTest, T09_Stats_SmallData_LowCompactionCount) {
   for (int i = 0; i < 5; ++i) {
     char key[16];
     std::snprintf(key, sizeof(key), "k%d", i);
-    ASSERT_OK(db_->Put(wo, key, "v"));
+    ASSERT_LEVELDB_OK(db_->Put(wo, key, "v"));
   }
 
   StdoutCapture cap;
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
   auto extractNum = [&](const std::string& label) -> long long {
@@ -3288,7 +3296,7 @@ TEST_F(FullCompactionTest, T09_Stats_SmallData_LowCompactionCount) {
 // T10: Empty DB → FFC → stats show exactly 0 compactions, 0 files, 0 bytes.
 TEST_F(FullCompactionTest, T10_Stats_EmptyDB_AllZero) {
   StdoutCapture cap;
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
   auto extractNum = [&](const std::string& label) -> long long {
@@ -3298,18 +3306,18 @@ TEST_F(FullCompactionTest, T10_Stats_EmptyDB_AllZero) {
     return std::stoll(out.substr(pos));
   };
   ASSERT_EQ(extractNum("Number of compactions executed: "), 0LL);
-  ASSERT_EQ(extractNum("Number of input files: "),          0LL);
-  ASSERT_EQ(extractNum("Number of output files: "),         0LL);
+  ASSERT_EQ(extractNum("Number of input files: "), 0LL);
+  ASSERT_EQ(extractNum("Number of output files: "), 0LL);
 }
 
 // T11: FFC twice in a row — second call sees an already-compacted DB so its
 //      compaction count must be 0 (no work to do).
 TEST_F(FullCompactionTest, T11_Stats_SecondFFCIsNoop) {
-  ASSERT_OK(FillRandom(300));
-  ASSERT_OK(db_->ForceFullCompaction());  // do the real work
+  ASSERT_LEVELDB_OK(FillRandom(300));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());  // do the real work
 
   StdoutCapture cap;
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
   auto extractNum = [&](const std::string& label) -> long long {
@@ -3323,15 +3331,17 @@ TEST_F(FullCompactionTest, T11_Stats_SecondFFCIsNoop) {
 }
 
 // T12: Bytes read must be >= bytes written is NOT guaranteed (compaction can
-//      expand output due to bloom filters), but both must be > 0 for non-empty DB.
+//      expand output due to bloom filters), but both must be > 0 for non-empty
+//      DB.
 TEST_F(FullCompactionTest, T12_Stats_BytesNonZeroForNonEmptyDB) {
-  ASSERT_OK(FillRandom(500));
+  ASSERT_LEVELDB_OK(FillRandom(500));
 
   StdoutCapture cap;
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
-  // We can't easily parse the human-formatted bytes, but the fields must appear.
+  // We can't easily parse the human-formatted bytes, but the fields must
+  // appear.
   ASSERT_TRUE(out.find("Total bytes read: 0 B") == std::string::npos);
   ASSERT_TRUE(out.find("Total bytes written: 0 B") == std::string::npos);
 }
@@ -3341,10 +3351,10 @@ TEST_F(FullCompactionTest, T12_Stats_BytesNonZeroForNonEmptyDB) {
 // T13: Deleted keys must remain deleted after FFC.
 TEST_F(FullCompactionTest, T13_DeletedKeysGoneAfterFFC) {
   WriteOptions wo;
-  ASSERT_OK(db_->Put(wo, "del_me", "val"));
-  ASSERT_OK(FillRandom(200));
-  ASSERT_OK(db_->Delete(wo, "del_me"));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->Put(wo, "del_me", "val"));
+  ASSERT_LEVELDB_OK(FillRandom(200));
+  ASSERT_LEVELDB_OK(db_->Delete(wo, "del_me"));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   std::string val;
   Status s = db_->Get(ReadOptions(), "del_me", &val);
@@ -3354,31 +3364,31 @@ TEST_F(FullCompactionTest, T13_DeletedKeysGoneAfterFFC) {
 // T14: Overwritten keys must show the latest value after FFC.
 TEST_F(FullCompactionTest, T14_OverwrittenKeys_LatestValue) {
   WriteOptions wo;
-  ASSERT_OK(db_->Put(wo, "k", "v1"));
-  ASSERT_OK(FillRandom(200));
-  ASSERT_OK(db_->Put(wo, "k", "v2"));
-  ASSERT_OK(FillRandom(200, 1024, 5000));
-  ASSERT_OK(db_->Put(wo, "k", "v3"));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->Put(wo, "k", "v1"));
+  ASSERT_LEVELDB_OK(FillRandom(200));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "k", "v2"));
+  ASSERT_LEVELDB_OK(FillRandom(200, 1024, 5000));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "k", "v3"));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   std::string val;
-  ASSERT_OK(db_->Get(ReadOptions(), "k", &val));
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "k", &val));
   ASSERT_EQ(val, "v3");
 }
 
 // T15: Snapshot taken before FFC must still see the old value.
 TEST_F(FullCompactionTest, T15_SnapshotPreservedAcrossFFC) {
   WriteOptions wo;
-  ASSERT_OK(db_->Put(wo, "snap_key", "old_val"));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "snap_key", "old_val"));
   const Snapshot* snap = db_->GetSnapshot();
-  ASSERT_OK(db_->Put(wo, "snap_key", "new_val"));
-  ASSERT_OK(FillRandom(300));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->Put(wo, "snap_key", "new_val"));
+  ASSERT_LEVELDB_OK(FillRandom(300));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   ReadOptions ro;
   ro.snapshot = snap;
   std::string val;
-  ASSERT_OK(db_->Get(ro, "snap_key", &val));
+  ASSERT_LEVELDB_OK(db_->Get(ro, "snap_key", &val));
   ASSERT_EQ(val, "old_val");
   db_->ReleaseSnapshot(snap);
 }
@@ -3387,27 +3397,27 @@ TEST_F(FullCompactionTest, T15_SnapshotPreservedAcrossFFC) {
 
 // T16: After FFC on a dataset that spans L0+L1, L0 is guaranteed empty.
 TEST_F(FullCompactionTest, T16_LevelCheck_L0EmptyAfterFFC) {
-  ASSERT_OK(FillRandom(800));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(800));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   ASSERT_EQ(FilesAtLevel(0), 0);
 }
 
 // T17: After FFC the total number of files must not increase (compaction can
 //      only reduce or maintain file count, never balloon it).
 TEST_F(FullCompactionTest, T17_LevelCheck_TotalFilesDoNotGrow) {
-  ASSERT_OK(FillRandom(800));
+  ASSERT_LEVELDB_OK(FillRandom(800));
   // Let background compaction settle a bit.
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   int before = TotalFiles();
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   int after = TotalFiles();
   ASSERT_TRUE(after <= before + 2);
 }
 
 // T18: After FFC all data lives in at most 2 adjacent levels (fully merged).
 TEST_F(FullCompactionTest, T18_LevelCheck_DataConsolidated) {
-  ASSERT_OK(FillRandom(2000));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(2000));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   // Count non-empty levels.
   int non_empty = 0;
@@ -3421,7 +3431,7 @@ TEST_F(FullCompactionTest, T18_LevelCheck_DataConsolidated) {
 // T19: A background write thread must not complete (write must block) while
 //      FFC is running, and must succeed after FFC finishes.
 TEST_F(FullCompactionTest, T19_WritesBlockedDuringFFC) {
-  ASSERT_OK(FillRandom(500)); // get some data on disk
+  ASSERT_LEVELDB_OK(FillRandom(500));  // get some data on disk
 
   std::atomic<bool> ffc_started{false};
   std::atomic<bool> write_done{false};
@@ -3456,15 +3466,15 @@ TEST_F(FullCompactionTest, T19_WritesBlockedDuringFFC) {
   // And the key must be readable.
   std::string val;
   Status gs = db_->Get(ReadOptions(), "concurrent_write", &val);
-  ASSERT_OK(gs);
+  ASSERT_LEVELDB_OK(gs);
   ASSERT_EQ(val, "val");
 }
 
 // T20: Reads are also blocked during FFC; they succeed after FFC finishes.
 TEST_F(FullCompactionTest, T20_ReadsBlockedDuringFFC) {
-  ASSERT_OK(FillRandom(500));
+  ASSERT_LEVELDB_OK(FillRandom(500));
   WriteOptions wo;
-  ASSERT_OK(db_->Put(wo, "readable_key", "readable_val"));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "readable_key", "readable_val"));
 
   std::atomic<bool> ffc_started{false};
   std::atomic<bool> read_done{false};
@@ -3487,14 +3497,14 @@ TEST_F(FullCompactionTest, T20_ReadsBlockedDuringFFC) {
   read_thread.join();
 
   ASSERT_TRUE(read_done.load());
-  ASSERT_OK(read_status);
+  ASSERT_LEVELDB_OK(read_status);
   ASSERT_EQ(read_val, "readable_val");
 }
 
 // T21: Two threads call FFC concurrently; both must succeed and the second
 //      must wait for the first to finish (no interleaving).
 TEST_F(FullCompactionTest, T21_ConcurrentFFC_Serialized) {
-  ASSERT_OK(FillRandom(300));
+  ASSERT_LEVELDB_OK(FillRandom(300));
 
   std::atomic<int> ffc_active{0};
   std::atomic<bool> overlap_detected{false};
@@ -3502,7 +3512,7 @@ TEST_F(FullCompactionTest, T21_ConcurrentFFC_Serialized) {
 
   auto ffc_fn = [&]() {
     int old = ffc_active.fetch_add(1);
-    if (old > 0) overlap_detected.store(true); // two in flight simultaneously
+    if (old > 0) overlap_detected.store(true);  // two in flight simultaneously
     Status s = db_->ForceFullCompaction();
     ffc_active.fetch_sub(1);
     return s.ok();
@@ -3520,7 +3530,7 @@ TEST_F(FullCompactionTest, T21_ConcurrentFFC_Serialized) {
   // flag serialization). We just check both succeeded and data is intact.
   std::string val;
   Status gs = db_->Get(ReadOptions(), "key00000000", &val);
-  ASSERT_OK(gs);
+  ASSERT_LEVELDB_OK(gs);
 }
 
 // GROUP 9 — Writes/reads interleaved around FFC
@@ -3535,7 +3545,7 @@ TEST_F(FullCompactionTest, T22_WritersAndFFC_AllDurable) {
   std::vector<Status> statuses(kWriters);
 
   // Pre-fill.
-  ASSERT_OK(FillRandom(200));
+  ASSERT_LEVELDB_OK(FillRandom(200));
 
   for (int w = 0; w < kWriters; ++w) {
     writers.emplace_back([&, w]() {
@@ -3545,7 +3555,10 @@ TEST_F(FullCompactionTest, T22_WritersAndFFC_AllDurable) {
         char key[32];
         std::snprintf(key, sizeof(key), "w%d_key%04d", w, i);
         Status s = db_->Put(wo, key, "concurrent_val");
-        if (!s.ok()) { statuses[w] = s; return; }
+        if (!s.ok()) {
+          statuses[w] = s;
+          return;
+        }
       }
     });
   }
@@ -3554,17 +3567,16 @@ TEST_F(FullCompactionTest, T22_WritersAndFFC_AllDurable) {
 
   // FFC fires while writers are running.
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   for (auto& th : writers) th.join();
 
   // All writer statuses must be ok.
-  for (int w = 0; w < kWriters; ++w)
-    ASSERT_OK(statuses[w]);
+  for (int w = 0; w < kWriters; ++w) ASSERT_LEVELDB_OK(statuses[w]);
 
   // Spot-check some keys written before FFC.
   std::string val;
-  ASSERT_OK(db_->Get(ReadOptions(), "key00000000", &val));
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "key00000000", &val));
 
   return;
 }
@@ -3573,8 +3585,8 @@ TEST_F(FullCompactionTest, T22_WritersAndFFC_AllDurable) {
 TEST_F(FullCompactionTest, T23_RepeatedWriteFFCCycles) {
   const int kCycles = 5;
   for (int c = 0; c < kCycles; ++c) {
-    ASSERT_OK(FillRandom(100, 512, c * 100));
-    ASSERT_OK(db_->ForceFullCompaction());
+    ASSERT_LEVELDB_OK(FillRandom(100, 512, c * 100));
+    ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
     ASSERT_EQ(FilesAtLevel(0), 0);
   }
   // All 500 keys (5 × 100) must be readable.
@@ -3582,7 +3594,7 @@ TEST_F(FullCompactionTest, T23_RepeatedWriteFFCCycles) {
   for (int c = 0; c < kCycles; ++c) {
     char key[32];
     std::snprintf(key, sizeof(key), "key%08d", c * 100);
-    ASSERT_OK(db_->Get(ReadOptions(), key, &val));
+    ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), key, &val));
   }
 }
 
@@ -3595,21 +3607,20 @@ TEST_F(FullCompactionTest, T24_IteratorAfterFFC_SortedCorrect) {
   for (int i = 0; i < N; ++i) {
     char key[32];
     std::snprintf(key, sizeof(key), "iter_key%04d", i);
-    ASSERT_OK(db_->Put(wo, key, "v"));
+    ASSERT_LEVELDB_OK(db_->Put(wo, key, "v"));
   }
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   Iterator* it = db_->NewIterator(ReadOptions());
   int count = 0;
   std::string prev;
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
     std::string cur = it->key().ToString();
-    if (!prev.empty())
-      ASSERT_TRUE(cur > prev);
+    if (!prev.empty()) ASSERT_TRUE(cur > prev);
     prev = cur;
     ++count;
   }
-  ASSERT_OK(it->status());
+  ASSERT_LEVELDB_OK(it->status());
   delete it;
   ASSERT_TRUE(count >= N);
 }
@@ -3624,16 +3635,16 @@ TEST_F(FullCompactionTest, T25_AllKeysDeleted_FFCCleans) {
   for (int i = 0; i < N; ++i) {
     char key[32];
     std::snprintf(key, sizeof(key), "del_key%04d", i);
-    ASSERT_OK(db_->Put(wo, key, "val"));
+    ASSERT_LEVELDB_OK(db_->Put(wo, key, "val"));
   }
   // Force to L0 first.
-  ASSERT_OK(FillRandom(50));
+  ASSERT_LEVELDB_OK(FillRandom(50));
   for (int i = 0; i < N; ++i) {
     char key[32];
     std::snprintf(key, sizeof(key), "del_key%04d", i);
-    ASSERT_OK(db_->Delete(wo, key));
+    ASSERT_LEVELDB_OK(db_->Delete(wo, key));
   }
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   // None of the deleted keys must be visible.
   for (int i = 0; i < N; i += 20) {
@@ -3649,11 +3660,11 @@ TEST_F(FullCompactionTest, T25_AllKeysDeleted_FFCCleans) {
 // T26: A DB that was already fully compacted (e.g. by a prior FFC) must
 //      report 0 compactions when FFC is called again, even with large data.
 TEST_F(FullCompactionTest, T26_AlreadyCompacted_ZeroCompactions) {
-  ASSERT_OK(FillRandom(800));
-  ASSERT_OK(db_->ForceFullCompaction());  // first FFC — actual work
+  ASSERT_LEVELDB_OK(FillRandom(800));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());  // first FFC — actual work
 
   StdoutCapture cap;
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
   auto extractNum = [&](const std::string& label) -> long long {
@@ -3668,10 +3679,10 @@ TEST_F(FullCompactionTest, T26_AlreadyCompacted_ZeroCompactions) {
 
 // T27: Writing a single key then FFC must NOT cause 3+ compactions.
 TEST_F(FullCompactionTest, T27_OneKey_LowCompactionCount) {
-  ASSERT_OK(db_->Put(WriteOptions(), "only_key", "only_val"));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "only_key", "only_val"));
 
   StdoutCapture cap;
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
   auto extractNum = [&](const std::string& label) -> long long {
@@ -3687,20 +3698,21 @@ TEST_F(FullCompactionTest, T27_OneKey_LowCompactionCount) {
 // GROUP 13 — FFC return value and status
 // T28: FFC must return Status::OK() when nothing is wrong.
 TEST_F(FullCompactionTest, T28_ReturnStatusOK) {
-  ASSERT_OK(FillRandom(300));
+  ASSERT_LEVELDB_OK(FillRandom(300));
   Status s = db_->ForceFullCompaction();
-  ASSERT_OK(s);
+  ASSERT_LEVELDB_OK(s);
 }
 
 // T29: FFC is synchronous — when it returns, Put() can proceed immediately.
 TEST_F(FullCompactionTest, T29_FFCSynchronous_PutImmediatelyAfter) {
-  ASSERT_OK(FillRandom(300));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(FillRandom(300));
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   // Immediately (in the same thread) do a Put — must not block.
   auto t0 = std::chrono::steady_clock::now();
-  ASSERT_OK(db_->Put(WriteOptions(), "post_ffc", "ok"));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "post_ffc", "ok"));
   auto t1 = std::chrono::steady_clock::now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+  auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
   ASSERT_TRUE(ms < 5000);
 }
 
@@ -3708,7 +3720,7 @@ TEST_F(FullCompactionTest, T29_FFCSynchronous_PutImmediatelyAfter) {
 // T30: Many reader threads + 1 FFC thread. All readers must eventually succeed.
 TEST_F(FullCompactionTest, T30_Stress_ManyReadersOneFFC) {
   const int N = 200;
-  ASSERT_OK(FillRandom(N));
+  ASSERT_LEVELDB_OK(FillRandom(N));
 
   std::atomic<bool> stop{false};
   std::atomic<int> read_errors{0};
@@ -3723,15 +3735,14 @@ TEST_F(FullCompactionTest, T30_Stress_ManyReadersOneFFC) {
         Status s = db_->Get(ReadOptions(), key, &val);
         // Status can be OK (found) or NotFound (key written but overwritten?).
         // Only I/O errors count as real failures.
-        if (!s.ok() && !s.IsNotFound())
-          read_errors.fetch_add(1);
+        if (!s.ok() && !s.IsNotFound()) read_errors.fetch_add(1);
       }
     });
   }
 
   // FFC runs once in the middle.
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   stop.store(true);
   for (auto& r : readers) r.join();
@@ -3741,7 +3752,7 @@ TEST_F(FullCompactionTest, T30_Stress_ManyReadersOneFFC) {
 
 // T31: Writer stress — writes keep coming while FFC fires; DB stays consistent.
 TEST_F(FullCompactionTest, T31_Stress_ContinuousWritesDuringFFC) {
-  ASSERT_OK(FillRandom(200));
+  ASSERT_LEVELDB_OK(FillRandom(200));
 
   std::atomic<bool> stop{false};
   std::atomic<int> write_errors{0};
@@ -3753,14 +3764,16 @@ TEST_F(FullCompactionTest, T31_Stress_ContinuousWritesDuringFFC) {
       char key[32];
       std::snprintf(key, sizeof(key), "stress_key%06d", idx++);
       Status s = db_->Put(WriteOptions(), key, "val");
-      if (!s.ok()) write_errors.fetch_add(1);
-      else total_writes.fetch_add(1);
+      if (!s.ok())
+        write_errors.fetch_add(1);
+      else
+        total_writes.fetch_add(1);
     }
   });
 
   // Give the writer time to accumulate L0 files.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  ASSERT_OK(db_->ForceFullCompaction());
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   stop.store(true);
   writer.join();
