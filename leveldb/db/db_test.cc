@@ -9,14 +9,15 @@
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
+#include <filesystem>
 #include <string>
 #include <thread>
-#include <chrono>
 #include <unistd.h>
-#include <filesystem>
-#include "leveldb/env.h"
+
 #include "leveldb/cache.h"
+#include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/table.h"
 
@@ -2981,7 +2982,7 @@ TEST_F(DBTest, RangeTombstoneDuplicationBug) {
     std::snprintf(key_buf, sizeof(key_buf), "B%02d", i);
     ASSERT_LEVELDB_OK(Put(key_buf, std::string(4000, 'x')));
   }
-  
+
   // Force a compaction to L1/L2
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
@@ -3007,9 +3008,11 @@ TEST_F(DBTest, FFC_OptimalLevelSettling) {
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 
   // THE TRUTH TEST:
-  // After a sequential cascade (0->1, 1->2 ... 5->6), everything MUST end up in Level 6.
+  // After a sequential cascade (0->1, 1->2 ... 5->6), everything MUST end up in
+  // Level 6.
   for (int i = 0; i < config::kNumLevels - 1; i++) {
-    ASSERT_EQ(0, NumTableFilesAtLevel(i)) << "Level " << i << " should be empty after full cascade";
+    ASSERT_EQ(0, NumTableFilesAtLevel(i))
+        << "Level " << i << " should be empty after full cascade";
   }
   ASSERT_GT(NumTableFilesAtLevel(config::kNumLevels - 1), 0);
 }
@@ -3032,7 +3035,7 @@ TEST_F(DBTest, FFC_MultiLevelMerge) {
   // 2. Put new data
   ASSERT_LEVELDB_OK(Put("new_key", "v1"));
   dbfull()->TEST_CompactMemTable();
-  
+
   int start_level = -1;
   for (int i = 0; i < config::kNumLevels; i++) {
     if (NumTableFilesAtLevel(i) > 0) start_level = i;
@@ -3160,7 +3163,8 @@ TEST_F(FullCompactionTest, T01_EmptyDB) {
   Status s = db_->ForceFullCompaction();
   std::string out = cap.Finish();
   ASSERT_LEVELDB_OK(s);
-  ASSERT_TRUE(out.find("Number of compactions executed: 0") != std::string::npos);
+  ASSERT_TRUE(out.find("Number of compactions executed: 0") !=
+              std::string::npos);
   ASSERT_TRUE(out.find("Number of input files: 0") != std::string::npos);
   ASSERT_TRUE(out.find("Number of output files: 0") != std::string::npos);
 }
@@ -3178,7 +3182,7 @@ TEST_F(FullCompactionTest, T02_EmptyDB_TwiceCalls) {
 TEST_F(FullCompactionTest, T03_DataOnlyInMemtable) {
   WriteOptions wo;
   ASSERT_LEVELDB_OK(db_->Put(wo, "alpha", "1"));
-  ASSERT_LEVELDB_OK(db_->Put(wo, "beta",  "2"));
+  ASSERT_LEVELDB_OK(db_->Put(wo, "beta", "2"));
   ASSERT_LEVELDB_OK(db_->Put(wo, "gamma", "3"));
 
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
@@ -3186,7 +3190,7 @@ TEST_F(FullCompactionTest, T03_DataOnlyInMemtable) {
   std::string val;
   ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "alpha", &val));
   ASSERT_EQ(val, "1");
-  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "beta",  &val));
+  ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "beta", &val));
   ASSERT_EQ(val, "2");
   ASSERT_LEVELDB_OK(db_->Get(ReadOptions(), "gamma", &val));
   ASSERT_EQ(val, "3");
@@ -3315,8 +3319,8 @@ TEST_F(FullCompactionTest, T10_Stats_EmptyDB_AllZero) {
     return std::stoll(out.substr(pos));
   };
   ASSERT_EQ(extractNum("Number of compactions executed: "), 0LL);
-  ASSERT_EQ(extractNum("Number of input files: "),          0LL);
-  ASSERT_EQ(extractNum("Number of output files: "),         0LL);
+  ASSERT_EQ(extractNum("Number of input files: "), 0LL);
+  ASSERT_EQ(extractNum("Number of output files: "), 0LL);
 }
 
 // T11: FFC twice in a row — second call sees an already-compacted DB so its
@@ -3340,7 +3344,8 @@ TEST_F(FullCompactionTest, T11_Stats_SecondFFCIsNoop) {
 }
 
 // T12: Bytes read must be >= bytes written is NOT guaranteed (compaction can
-//      expand output due to bloom filters), but both must be > 0 for non-empty DB.
+//      expand output due to bloom filters), but both must be > 0 for non-empty
+//      DB.
 TEST_F(FullCompactionTest, T12_Stats_BytesNonZeroForNonEmptyDB) {
   ASSERT_LEVELDB_OK(FillRandom(500));
 
@@ -3348,7 +3353,8 @@ TEST_F(FullCompactionTest, T12_Stats_BytesNonZeroForNonEmptyDB) {
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
   std::string out = cap.Finish();
 
-  // We can't easily parse the human-formatted bytes, but the fields must appear.
+  // We can't easily parse the human-formatted bytes, but the fields must
+  // appear.
   ASSERT_TRUE(out.find("Total bytes read: 0 B") == std::string::npos);
   ASSERT_TRUE(out.find("Total bytes written: 0 B") == std::string::npos);
 }
@@ -3437,7 +3443,7 @@ TEST_F(FullCompactionTest, T18_LevelCheck_DataConsolidated) {
 // T19: A background write thread must not complete (write must block) while
 //      FFC is running, and must succeed after FFC finishes.
 TEST_F(FullCompactionTest, T19_WritesBlockedDuringFFC) {
-  ASSERT_LEVELDB_OK(FillRandom(500)); // get some data on disk
+  ASSERT_LEVELDB_OK(FillRandom(500));  // get some data on disk
 
   std::atomic<bool> ffc_started{false};
   std::atomic<bool> write_done{false};
@@ -3518,7 +3524,7 @@ TEST_F(FullCompactionTest, T21_ConcurrentFFC_Serialized) {
 
   auto ffc_fn = [&]() {
     int old = ffc_active.fetch_add(1);
-    if (old > 0) overlap_detected.store(true); // two in flight simultaneously
+    if (old > 0) overlap_detected.store(true);  // two in flight simultaneously
     Status s = db_->ForceFullCompaction();
     ffc_active.fetch_sub(1);
     return s.ok();
@@ -3561,7 +3567,10 @@ TEST_F(FullCompactionTest, T22_WritersAndFFC_AllDurable) {
         char key[32];
         std::snprintf(key, sizeof(key), "w%d_key%04d", w, i);
         Status s = db_->Put(wo, key, "concurrent_val");
-        if (!s.ok()) { statuses[w] = s; return; }
+        if (!s.ok()) {
+          statuses[w] = s;
+          return;
+        }
       }
     });
   }
@@ -3575,8 +3584,7 @@ TEST_F(FullCompactionTest, T22_WritersAndFFC_AllDurable) {
   for (auto& th : writers) th.join();
 
   // All writer statuses must be ok.
-  for (int w = 0; w < kWriters; ++w)
-    ASSERT_LEVELDB_OK(statuses[w]);
+  for (int w = 0; w < kWriters; ++w) ASSERT_LEVELDB_OK(statuses[w]);
 
   // Spot-check some keys written before FFC.
   std::string val;
@@ -3620,8 +3628,7 @@ TEST_F(FullCompactionTest, T24_IteratorAfterFFC_SortedCorrect) {
   std::string prev;
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
     std::string cur = it->key().ToString();
-    if (!prev.empty())
-      ASSERT_TRUE(cur > prev);
+    if (!prev.empty()) ASSERT_TRUE(cur > prev);
     prev = cur;
     ++count;
   }
@@ -3716,7 +3723,8 @@ TEST_F(FullCompactionTest, T29_FFCSynchronous_PutImmediatelyAfter) {
   auto t0 = std::chrono::steady_clock::now();
   ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "post_ffc", "ok"));
   auto t1 = std::chrono::steady_clock::now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+  auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
   ASSERT_TRUE(ms < 5000);
 }
 
@@ -3739,8 +3747,7 @@ TEST_F(FullCompactionTest, T30_Stress_ManyReadersOneFFC) {
         Status s = db_->Get(ReadOptions(), key, &val);
         // Status can be OK (found) or NotFound (key written but overwritten?).
         // Only I/O errors count as real failures.
-        if (!s.ok() && !s.IsNotFound())
-          read_errors.fetch_add(1);
+        if (!s.ok() && !s.IsNotFound()) read_errors.fetch_add(1);
       }
     });
   }
@@ -3769,8 +3776,10 @@ TEST_F(FullCompactionTest, T31_Stress_ContinuousWritesDuringFFC) {
       char key[32];
       std::snprintf(key, sizeof(key), "stress_key%06d", idx++);
       Status s = db_->Put(WriteOptions(), key, "val");
-      if (!s.ok()) write_errors.fetch_add(1);
-      else total_writes.fetch_add(1);
+      if (!s.ok())
+        write_errors.fetch_add(1);
+      else
+        total_writes.fetch_add(1);
     }
   });
 
@@ -3783,6 +3792,119 @@ TEST_F(FullCompactionTest, T31_Stress_ContinuousWritesDuringFFC) {
 
   ASSERT_EQ(write_errors.load(), 0);
   ASSERT_EQ(FilesAtLevel(0), 0);
+}
+TEST_F(FullCompactionTest, RangeTombstone_FragmentationAcrossSSTableBoundary) {
+  // STEP 1: Plant the "Zombie" key.
+  // We place a key alphabetically near the end of our range ("P") and
+  // immediately compact the database so this key gets pushed down to Level 1
+  // or 2.
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "P_zombie_key", "brainssss"));
+  db_->CompactRange(nullptr, nullptr);
+
+  // STEP 2: Issue the Range Tombstone.
+  // This tombstone covers [A, Z), which definitively includes "P_zombie_key".
+  // The zombie should now be dead.
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+
+  // STEP 3: Force an SSTable split.
+  // LevelDB splits SSTables at roughly 2MB. We will write 100 point keys that
+  // are 30KB each (~3MB total). These keys start with "B", so they evaluate
+  // AFTER "A_start" but BEFORE "P_zombie_key".
+  std::string heavy_payload(30000, 'x');
+  for (int i = 0; i < 100; i++) {
+    char key[32];
+    std::snprintf(key, sizeof(key), "B_heavy_%03d", i);
+    ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), key, heavy_payload));
+  }
+
+  // STEP 4: Trigger the Compaction.
+  // This forces L0 (containing the tombstone and the heavy B-keys) to compact.
+  db_->CompactRange(nullptr, nullptr);
+
+  // STEP 5: THE TRAP.
+  // We attempt to read the zombie key.
+  std::string value;
+  Status s = db_->Get(ReadOptions(), "P_zombie_key", &value);
+
+  // If Bug 1 (Truncation) exists, File 2 did not get the tombstone.
+  // LevelDB will fall through to the lower level and return "brainssss".
+  // If the logic is fixed, the tombstone was fragmented into File 2,
+  // your InternalGet short-circuit fires, and we get NotFound.
+  ASSERT_TRUE(s.IsNotFound())
+      << "FATAL BUG: Tombstone was truncated at the file boundary! "
+      << "Zombie data resurrected: " << value;
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_EmptyFileBug) {
+  // 1. Plant data in a lower level (L2)
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "target_key", "old_value"));
+  db_->CompactRange(nullptr, nullptr);  // L0 -> L1
+  db_->CompactRange(nullptr, nullptr);  // L1 -> L2
+
+  // 2. Issue a Range Tombstone with NO point keys
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "a_start", "z_end"));
+
+  // 3. Compact L0 -> L1.
+  // If the Empty File Bug exists, this compaction will drop the tombstone
+  // entirely.
+  db_->CompactRange(nullptr, nullptr);
+
+  // 4. Verify tombstone survived and shadows the L2 data
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "target_key", &val);
+
+  ASSERT_TRUE(s.IsNotFound()) << "Empty File Bug: Tombstone was discarded "
+                                 "because there were no point keys. "
+                              << "Data resurrected: " << val;
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_TombstoneTailBug) {
+  // 1. Plant data at the "tail" end of the target range in L2
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "Y_tail_key", "old_tail_data"));
+  db_->CompactRange(nullptr, nullptr);
+  db_->CompactRange(nullptr, nullptr);
+
+  // 2. Issue a Range Tombstone [A, Z) and a point key M
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "M_middle_key", "middle_data"));
+
+  // 3. Compact L0 -> L1.
+  // The file will process M, but must stretch its boundary to Z.
+  db_->CompactRange(nullptr, nullptr);
+
+  // 4. Verify the tail data is correctly shadowed
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "Y_tail_key", &val);
+
+  ASSERT_TRUE(s.IsNotFound())
+      << "Tombstone Tail Bug: The final file's boundary was not stretched to "
+         "encompass the tombstone tail. "
+      << "Data resurrected: " << val;
+}
+
+TEST_F(FullCompactionTest, TableBuilder_StartKeyInjectionCrash) {
+  // 1. Create a tombstone that starts LATE in the alphabet
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "T_start", "Z_end"));
+
+  // 2. Write a massive amount of data EARLY in the alphabet
+  // This forces LevelDB to create File 1 (e.g., keys A00 to A99)
+  std::string heavy_payload(10000, 'x');  // 10KB per key
+  for (int i = 0; i < 250; i++) {
+    char key[32];
+    std::snprintf(key, sizeof(key), "A_%03d", i);
+    ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), key, heavy_payload));
+  }
+
+  // 3. Write a key in the MIDDLE of the alphabet.
+  // This key ("N_middle") will force File 2 to open.
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "N_middle", "data"));
+
+  // 4. Force compaction.
+  // File 2 opens to write "N_middle". It sees [T_start, Z_end] is active.
+  // It injects "T_start" into TableBuilder.
+  // Then it tries to write "N_middle".
+  // TableBuilder asserts: "N_middle" > "T_start" (FALSE!) -> CRASH.
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
 }
 
 }  // namespace leveldb

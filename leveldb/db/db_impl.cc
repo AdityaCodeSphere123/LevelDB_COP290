@@ -551,7 +551,8 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
         if (meta.largest.empty() ||
             user_comparator()->Compare(del.end_key, meta.largest.user_key()) >
                 0) {
-          meta.largest = InternalKey(del.end_key, 0, kTypeDeletion);
+          meta.largest =
+              InternalKey(del.end_key, del.seq, kTypeRangeDeletion);
         }
       }
     }
@@ -793,7 +794,8 @@ Status DBImpl::ForceFullCompaction() {
     MutexLock lock(&mutex_);
 
     // Wait for any existing background work to clear out
-    while ((background_compaction_scheduled_ == true || manual_compaction_ != nullptr) &&
+    while ((background_compaction_scheduled_ == true ||
+            manual_compaction_ != nullptr) &&
            bg_error_.ok() == true &&
            shutting_down_.load(std::memory_order_acquire) == false) {
       background_work_finished_signal_.Wait();
@@ -833,8 +835,9 @@ Status DBImpl::ForceFullCompaction() {
   const uint64_t end_micros = env_->NowMicros();
 
   StatsForCompaction aggregated_stats;
-  aggregated_stats.elapsed_micros =static_cast<int64_t>(end_micros - start_micros);
-  aggregated_stats.num_compactions= static_cast<int64_t>(records.size());
+  aggregated_stats.elapsed_micros =
+      static_cast<int64_t>(end_micros - start_micros);
+  aggregated_stats.num_compactions = static_cast<int64_t>(records.size());
 
   auto record = records.begin();
   while (record != records.end()) {
@@ -872,7 +875,9 @@ void DBImpl::RecordBackgroundError(const Status& s) {
   }
 }
 
-void DBImpl::RecordForceCompactionStats(int input_files, int output_files,int64_t bytes_read,int64_t bytes_written) {
+void DBImpl::RecordForceCompactionStats(int input_files, int output_files,
+                                        int64_t bytes_read,
+                                        int64_t bytes_written) {
   mutex_.AssertHeld();
   if (records_forcecompaction_ != nullptr) {
     SingleCompactionRecord record_entry;
@@ -1171,14 +1176,16 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     auto last = std::unique(
         dels.begin(), dels.end(),
         [this](const RangeDeletion& a, const RangeDeletion& b) {
-          return user_comparator()->Compare(a.start_key, b.start_key) == 0 && a.seq == b.seq;
+          return user_comparator()->Compare(a.start_key, b.start_key) == 0 &&
+                 a.seq == b.seq;
         });
     dels.erase(last, dels.end());
   }
 
   size_t del_idx = 0;
 
-  while ((input->Valid() || del_idx < dels.size()) && !shutting_down_.load(std::memory_order_acquire)) {
+  while ((input->Valid() || del_idx < dels.size()) &&
+         !shutting_down_.load(std::memory_order_acquire)) {
     // Prioritize immutable compaction work
     if (has_imm_.load(std::memory_order_relaxed)) {
       const uint64_t imm_start = env_->NowMicros();
@@ -1195,11 +1202,13 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     bool is_tombstone_next = false;
     InternalKey tombstone_ikey;
     if (del_idx < dels.size()) {
-      tombstone_ikey = InternalKey(dels[del_idx].start_key, dels[del_idx].seq,kTypeRangeDeletion);
+      tombstone_ikey = InternalKey(dels[del_idx].start_key, dels[del_idx].seq,
+                                   kTypeRangeDeletion);
       if (!input->Valid()) {
         is_tombstone_next = true;
       } else {
-        if (internal_comparator_.Compare(tombstone_ikey.Encode(),input->key()) <= 0) {
+        if (internal_comparator_.Compare(tombstone_ikey.Encode(),
+                                         input->key()) <= 0) {
           is_tombstone_next = true;
         }
       }
@@ -1222,6 +1231,24 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         if (!status.ok()) {
           break;
         }
+        for (size_t i = 0; i < del_idx; i++) {
+          const auto& active_del = dels[i];
+          if (user_comparator()->Compare(active_del.end_key,
+                                         ExtractUserKey(key)) > 0) {
+            InternalKey active_tkey(ExtractUserKey(key), active_del.seq,
+                                    kTypeRangeDeletion);
+            compact->builder->Add(active_tkey.Encode(), active_del.end_key);
+            if (compact->current_output()->smallest.empty()) {
+              compact->current_output()->smallest = active_tkey;
+            }
+            if (compact->current_output()->largest.empty() ||
+                user_comparator()->Compare(
+                    ExtractUserKey(key),
+                    compact->current_output()->largest.user_key()) > 0) {
+              compact->current_output()->largest = active_tkey;
+            }
+          }
+        }
       }
 
       compact->builder->Add(tombstone_ikey.Encode(), del.end_key);
@@ -1232,11 +1259,11 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
               0) {
         compact->current_output()->smallest = tombstone_ikey;
       }
-      InternalKey end_ikey(del.end_key, 0, kTypeDeletion);
       if (compact->current_output()->largest.empty() ||
           user_comparator()->Compare(
-              del.end_key, compact->current_output()->largest.user_key()) > 0) {
-        compact->current_output()->largest = end_ikey;
+              del.start_key, compact->current_output()->largest.user_key()) >
+              0) {
+        compact->current_output()->largest = tombstone_ikey;
       }
 
       if (compact->builder->FileSize() >=
@@ -1306,6 +1333,24 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         if (!status.ok()) {
           break;
         }
+        for (size_t i = 0; i < del_idx; i++) {
+          const auto& active_del = dels[i];
+          if (user_comparator()->Compare(active_del.end_key,
+                                         ExtractUserKey(key)) > 0) {
+            InternalKey active_tkey(ExtractUserKey(key), active_del.seq,
+                                    kTypeRangeDeletion);
+            compact->builder->Add(active_tkey.Encode(), active_del.end_key);
+            if (compact->current_output()->smallest.empty()) {
+              compact->current_output()->smallest = active_tkey;
+            }
+            if (compact->current_output()->largest.empty() ||
+                user_comparator()->Compare(
+                    ExtractUserKey(key),
+                    compact->current_output()->largest.user_key()) > 0) {
+              compact->current_output()->largest = active_tkey;
+            }
+          }
+        }
       }
 
       if (compact->current_output()->smallest.empty() ||
@@ -1340,6 +1385,11 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     status = Status::IOError("Deleting DB during compaction");
   }
   if (status.ok() && compact->builder != nullptr) {
+    for (size_t i = 0; i < del_idx; i++) {
+       if (user_comparator()->Compare(dels[i].end_key, compact->current_output()->largest.user_key()) > 0) {
+           compact->current_output()->largest = InternalKey(dels[i].end_key, dels[i].seq, kTypeRangeDeletion);
+       }
+    }
     status = FinishCompactionOutputFile(compact, input);
   }
   if (status.ok() && compact->builder == nullptr && !dels.empty() &&
@@ -1354,9 +1404,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         if (compact->current_output()->smallest.empty()) {
           compact->current_output()->smallest = tombstone_key;
         }
-        InternalKey end_ikey(del->end_key, 0, kTypeDeletion);
-        if (compact->current_output()->largest.empty() || user_comparator()->Compare(del->end_key, compact->current_output()->largest.user_key()) >0) {
-          compact->current_output()->largest = end_ikey;
+        if (compact->current_output()->largest.empty() ||
+            user_comparator()->Compare(
+                del->end_key, compact->current_output()->largest.user_key()) >
+                0) {
+          compact->current_output()->largest =
+              InternalKey(del->end_key, del->seq, kTypeRangeDeletion);
         }
         ++del;
       }
@@ -1391,7 +1444,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       num_input_files += compact->compaction->num_input_files(idx);
       idx++;
     }
-    RecordForceCompactionStats(num_input_files,static_cast<int>(compact->outputs.size()),
+    RecordForceCompactionStats(num_input_files,
+                               static_cast<int>(compact->outputs.size()),
                                stats.bytes_read, stats.bytes_written);
   }
 
@@ -1547,7 +1601,8 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
                        seed);
 }
 
-Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,const Slice& end_key,
+Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
+                    const Slice& end_key,
                     std::vector<std::pair<std::string, std::string>>* result) {
   {
     MutexLock l(&mutex_);
@@ -1574,7 +1629,8 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,const Sli
   return status;
 }
 
-Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,const Slice& end_key) {
+Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
+                           const Slice& end_key) {
   if (start_key.compare(end_key) >= 0) {
     return Status::OK();
   }
@@ -1618,7 +1674,8 @@ Status DBImpl::CheckDatabaseUsable() const {
 bool DBImpl::ShouldWaitFullCompaction() const {
   const bool full_compaction_running = force_full_compaction_in_progress_;
   const bool database_healthy = (bg_error_.ok() == true);
-  const bool database_running = (shutting_down_.load(std::memory_order_acquire) == false);
+  const bool database_running =
+      (shutting_down_.load(std::memory_order_acquire) == false);
   return full_compaction_running && database_healthy && database_running;
 }
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
@@ -2012,7 +2069,7 @@ void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
     for (int level = 0; level < config::kNumLevels; level++) {
       size_t i = 0;
       const auto& files = current->files_[level];
-      while (i < files.size()){
+      while (i < files.size()) {
         FileMetaData* f = files[i];
         table_cache_->GetRangeDeletions(f->number, f->file_size, list);
         i++;

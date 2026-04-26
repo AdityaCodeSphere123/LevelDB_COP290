@@ -1,16 +1,9 @@
 tester
 tester1
-
-leveldb/tester
-leveldb/tester1
-
 *.o
 *.a
 *.so
 *.dylib
-
-tester
-tester1
 
 *.out
 *.exe
