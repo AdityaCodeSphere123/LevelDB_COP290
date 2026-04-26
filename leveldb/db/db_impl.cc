@@ -1235,8 +1235,17 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
           const auto& active_del = dels[i];
           if (user_comparator()->Compare(active_del.end_key,
                                          ExtractUserKey(key)) > 0) {
-            InternalKey active_tkey(ExtractUserKey(key), active_del.seq,
-                                    kTypeRangeDeletion);
+            std::string start_ukey;
+            if (compact->outputs.size() >= 2) {
+              start_ukey = compact->outputs[compact->outputs.size() - 2].largest.user_key().ToString();
+              start_ukey.push_back('\x00');
+            } else {
+              start_ukey = ExtractUserKey(key).ToString();
+            }
+            if (user_comparator()->Compare(active_del.start_key, start_ukey) > 0) {
+              start_ukey = active_del.start_key;
+            }
+            InternalKey active_tkey(start_ukey, active_del.seq, kTypeRangeDeletion);
             compact->builder->Add(active_tkey.Encode(), active_del.end_key);
             if (compact->current_output()->smallest.empty()) {
               compact->current_output()->smallest = active_tkey;
@@ -1335,10 +1344,18 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         }
         for (size_t i = 0; i < del_idx; i++) {
           const auto& active_del = dels[i];
-          if (user_comparator()->Compare(active_del.end_key,
-                                         ExtractUserKey(key)) > 0) {
-            InternalKey active_tkey(ExtractUserKey(key), active_del.seq,
-                                    kTypeRangeDeletion);
+          if (user_comparator()->Compare(active_del.end_key, ExtractUserKey(key)) > 0) {
+            std::string start_ukey;
+            if (compact->outputs.size() >= 2) {
+              start_ukey = compact->outputs[compact->outputs.size() - 2].largest.user_key().ToString();
+              start_ukey.push_back('\x00');
+            } else {
+              start_ukey = ExtractUserKey(key).ToString();
+            }
+            if (user_comparator()->Compare(active_del.start_key, start_ukey) > 0) {
+              start_ukey = active_del.start_key;
+            }
+            InternalKey active_tkey(start_ukey, active_del.seq, kTypeRangeDeletion);
             compact->builder->Add(active_tkey.Encode(), active_del.end_key);
             if (compact->current_output()->smallest.empty()) {
               compact->current_output()->smallest = active_tkey;

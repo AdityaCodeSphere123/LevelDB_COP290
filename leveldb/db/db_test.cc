@@ -3853,9 +3853,9 @@ TEST_F(FullCompactionTest, RangeTombstone_EmptyFileBug) {
   std::string val;
   Status s = db_->Get(ReadOptions(), "target_key", &val);
 
-  ASSERT_TRUE(s.IsNotFound()) << "Empty File Bug: Tombstone was discarded "
-                                 "because there were no point keys. "
-                              << "Data resurrected: " << val;
+  ASSERT_TRUE(s.IsNotFound())
+      << "FATAL BUG: Tombstone was discarded because there were no point keys. "
+      << "Data resurrected: " << val;
 }
 
 TEST_F(FullCompactionTest, RangeTombstone_TombstoneTailBug) {
@@ -3905,6 +3905,65 @@ TEST_F(FullCompactionTest, TableBuilder_StartKeyInjectionCrash) {
   // Then it tries to write "N_middle".
   // TableBuilder asserts: "N_middle" > "T_start" (FALSE!) -> CRASH.
   ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_LeftBoundaryTruncationBug) {
+  // 1. Plant an old key early in the alphabet ("B") in L2
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "B_zombie", "brains"));
+  db_->CompactRange(nullptr, nullptr);
+  db_->CompactRange(nullptr, nullptr);
+
+  // 2. Issue a tombstone covering [A, Z]
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+
+  // 3. Write a point key that comes AFTER "B" (e.g., "C") to L0
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "C_point", "data"));
+
+  // 4. Compact L0 to L1.
+  // The file will open. The first point key is "C".
+  // If the bug exists, the file's 'smallest' key is set to "C".
+  // The tombstone [A, Z] is injected, but the [A, C) portion is outside
+  // the file's manifest boundaries, effectively deleting it!
+  db_->CompactRange(nullptr, nullptr);
+
+  // 5. Query "B_zombie".
+  // Version::Get will check L1. It asks: Is "B" between "C" and "Z"? NO.
+  // It skips L1 completely. It checks L2. Finds "B_zombie". Returns it.
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "B_zombie", &val);
+  ASSERT_TRUE(s.IsNotFound()) << "Left Boundary Truncation Bug! Tombstone lost "
+                                 "its front half. Zombie data resurrected: "
+                              << val;
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_MiddleGapResurrectionBug) {
+  // 1. Plant an old deleted key in a lower level (L2)
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "C_zombie", "brains"));
+  db_->CompactRange(nullptr, nullptr);
+  db_->CompactRange(nullptr, nullptr);
+
+  // 2. Issue a tombstone covering [A, Z]
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+
+  // 3. Write Point Key 1 (B) - Make it huge to force an SSTable split
+  ASSERT_LEVELDB_OK(
+      db_->Put(WriteOptions(), "B_heavy", std::string(3000000, 'x')));
+
+  // 4. Write Point Key 2 (F) - This will go into File 2
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "F_point", "data"));
+
+  // 5. Compact L0 -> L1
+  db_->CompactRange(nullptr, nullptr);
+
+  // 6. Query the zombie key "C"
+  // File 1 closes at "B_heavy". File 2 opens at "F_point".
+  // The tombstone gap (B, F) leaves "C" unprotected.
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "C_zombie", &val);
+
+  ASSERT_TRUE(s.IsNotFound()) << "FATAL BUG: Middle Gap Resurrection! "
+                                 "Tombstone coverage was lost between files. "
+                              << "Data resurrected: " << val;
 }
 
 }  // namespace leveldb
