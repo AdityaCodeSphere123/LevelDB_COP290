@@ -569,6 +569,16 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   stats.micros = env_->NowMicros() - start_micros;
   stats.bytes_written = meta.file_size;
   stats_[level].Add(stats);
+
+  // If a ForceFullCompaction is in progress, record per compaction details
+  if (ffc_records_ != nullptr) {
+    SingleCompactionRecord rec;
+    rec.input_files = 0;
+    rec.output_files = (meta.file_size > 0 ? 1 : 0);
+    rec.bytes_read = 0;
+    rec.bytes_written = meta.file_size;
+    ffc_records_->push_back(rec);
+  }
   return s;
 }
 
@@ -685,13 +695,8 @@ std::string StatsForCompaction::FormatBytes(int64_t bytes) const {
 void StatsForCompaction::Print() const {
   std::ostringstream out;
 
-  out << std::endl << "Compaction Report" << std::endl;
-  out << "Number of compactions executed: " << num_compactions << std::endl;
-  out << "Number of input files: " << num_input_files << std::endl;
-  out << "Number of output files: " << num_output_files << std::endl;
-  out << "Total bytes read: " << FormatBytes(bytes_read) << std::endl;
-  out << "Total bytes written: " << FormatBytes(bytes_written) << std::endl;
-  out << "Elapsed time: " << elapsed_micros / 1000 << " ms" << std::endl;
+  out << num_compactions << "; " << num_input_files << "; " << num_output_files
+      << "; " << bytes_read << "; " << bytes_written << std::endl;
   const std::string report = out.str();
   std::fwrite(report.data(), 1, report.size(), stdout);
   std::fflush(stdout);
@@ -748,14 +753,6 @@ Status DBImpl::ForceFullCompaction() {
   const uint64_t start_micros = env_->NowMicros();
   Status status;
 
-  // Flush the memtable FIRST, before setting the lockdown flag.
-  // This allows normal background compactions to clear L0 if it is full,
-  // which prevents the deadlock where the background thread waits on this flag.
-  status = FlushedMemTable();
-  if (!status.ok()) {
-    return status;
-  }
-
   std::vector<SingleCompactionRecord> records;
   {
     MutexLock lock(&mutex_);
@@ -765,21 +762,6 @@ Status DBImpl::ForceFullCompaction() {
       background_work_finished_signal_.Wait();
     }
     force_full_compaction_in_progress_ = true;
-
-    // Wait for any existing background work to clear out
-    while ((background_compaction_scheduled_ == true ||
-            manual_compaction_ != nullptr) &&
-           bg_error_.ok() == true &&
-           shutting_down_.load(std::memory_order_acquire) == false) {
-      background_work_finished_signal_.Wait();
-    }
-
-    status = CheckDatabaseUsable();
-    if (!status.ok()) {
-      force_full_compaction_in_progress_ = false;
-      background_work_finished_signal_.SignalAll();
-      return status;
-    }
     ffc_records_ = &records;
   }
 
@@ -798,20 +780,37 @@ Status DBImpl::ForceFullCompaction() {
     }
   };
 
-  int max_level_with_files = -1;
+  // Flush the memtable FIRST, before setting the lockdown flag.
+  // This allows normal background compactions to clear L0 if it is full,
+  // which prevents the deadlock where the background thread waits on this flag.
+  status = FlushedMemTable();
+  if (!status.ok()) {
+    FinishFullCompaction();
+    return status;
+  }
+
   {
     MutexLock lock(&mutex_);
-    // Start checking at 0, not 1!
-    for (int i = 0; i < config::kNumLevels; i++) {
-      if (versions_->NumLevelFiles(i) > 0) {
-        max_level_with_files = i;
-      }
+
+    // Wait for any existing background work to clear out
+    while ((background_compaction_scheduled_ == true ||
+            manual_compaction_ != nullptr) &&
+           bg_error_.ok() == true &&
+           shutting_down_.load(std::memory_order_acquire) == false) {
+      background_work_finished_signal_.Wait();
+    }
+
+    status = CheckDatabaseUsable();
+    if (!status.ok()) {
+      FinishFullCompaction();
+      return status;
     }
   }
 
-  // 2. Iterate up to AND INCLUDING the pre-calculated max_level
-  int level = 0;
-  while (level <= max_level_with_files && level < config::kNumLevels - 1) {
+  // 2. Iterate through ALL levels sequentially to ensure data cascades to the
+  // bottom. A key in L0 will be pushed to L1, then the L1 compaction will push
+  // it to L2, and so on.
+  for (int level = 0; level < config::kNumLevels - 1; level++) {
     {
       MutexLock lock(&mutex_);
       status = CheckDatabaseUsable();
@@ -819,7 +818,6 @@ Status DBImpl::ForceFullCompaction() {
         break;
       }
       if (versions_->NumLevelFiles(level) == 0) {
-        level++;
         continue;
       }
     }
@@ -830,7 +828,6 @@ Status DBImpl::ForceFullCompaction() {
     if (!status.ok()) {
       break;
     }
-    level++;
   }
   FinishFullCompaction();
 
@@ -1206,7 +1203,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
       if (compaction_range_dels.IsDeleted(ikey.user_key, ikey.sequence,
-                                          kMaxSequenceNumber)) {
+                                          compact->smallest_snapshot)) {
         drop = true;
       } else if (!has_current_user_key ||
                  user_comparator()->Compare(ikey.user_key,
@@ -1223,13 +1220,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       } else if (ikey.type == kTypeDeletion &&
                  ikey.sequence <= compact->smallest_snapshot &&
                  compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
-        // For this user key:
-        // (1) there is no data in higher levels
-        // (2) data in lower levels will have larger sequence numbers
-        // (3) data in layers that are being compacted here and have
-        //     smaller sequence numbers will be dropped in the next
-        //     few iterations of this loop (by rule (A) above).
-        // Therefore this deletion marker is obsolete and can be dropped.
         drop = true;
       }
 
