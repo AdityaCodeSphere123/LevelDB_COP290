@@ -180,6 +180,7 @@ class DBImpl : public DB {
   Status CheckDatabaseUsable() const EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   void RecordBackgroundError(const Status& s);
+  void RecordForceCompactionStats(int input_files, int output_files, int64_t bytes_read, int64_t bytes_written) EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   void MaybeScheduleCompaction() EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   static void BGWork(void* db);
@@ -256,7 +257,7 @@ class DBImpl : public DB {
   // be scheduled during this window.
   bool force_full_compaction_in_progress_ GUARDED_BY(mutex_);
 
-  std::vector<SingleCompactionRecord>* ffc_records_ GUARDED_BY(mutex_);
+  std::vector<SingleCompactionRecord>* records_forcecompaction_ GUARDED_BY(mutex_);
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

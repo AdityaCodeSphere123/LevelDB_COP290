@@ -16,12 +16,37 @@
 #include "util/mutexlock.h"
 #include "util/random.h"
 
+#include <cstdio>
+
 namespace leveldb {
+
+#if 0
+static void DumpInternalIter(Iterator* iter) {
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+    ParsedInternalKey k;
+    if (!ParseInternalKey(iter->key(), &k)) {
+      std::fprintf(stderr, "Corrupt '%s'\n", EscapeString(iter->key()).c_str());
+    } else {
+      std::fprintf(stderr, "@ '%s'\n", k.DebugString().c_str());
+    }
+  }
+}
+#endif
 
 namespace {
 
+// Memtables and sstables that make the DB representation contain
+// (userkey,seq,type) => uservalue entries.  DBIter
+// combines multiple entries for the same userkey found in the DB
+// representation into a single entry while accounting for sequence
+// numbers, deletion markers, overwrites, etc.
 class DBIter : public Iterator {
  public:
+  // Which direction is the iterator currently moving?
+  // (1) When moving forward, the internal iterator is positioned at
+  //     the exact entry that yields this->key(), this->value()
+  // (2) When moving backwards, the internal iterator is positioned
+  //     just before all entries whose user key == this->key().
   enum Direction { kForward, kReverse };
 
   DBIter(DBImpl* db, const Comparator* cmp, Iterator* iter, SequenceNumber s,
@@ -83,6 +108,7 @@ class DBIter : public Iterator {
     }
   }
 
+  // Picks the number of bytes that can be read until a compaction is scheduled.
   size_t RandomCompactionPeriod() {
     return rnd_.Uniform(2 * config::kReadBytesPeriod);
   }
@@ -92,8 +118,8 @@ class DBIter : public Iterator {
   Iterator* const iter_;
   SequenceNumber const sequence_;
   Status status_;
-  std::string saved_key_;
-  std::string saved_value_;
+  std::string saved_key_;    // == current key when direction_==kReverse
+  std::string saved_value_;  // == current raw value when direction_==kReverse
   Direction direction_;
   bool valid_;
 
@@ -124,8 +150,12 @@ inline bool DBIter::ParseKey(ParsedInternalKey* ikey) {
 
 void DBIter::Next() {
   assert(valid_);
-  if (direction_ == kReverse) {
+
+  if (direction_ == kReverse) {  // Switch directions?
     direction_ = kForward;
+    // iter_ is pointing just before the entries for this->key(),
+    // so advance into the range of entries for this->key() and then
+    // use the normal skipping code below.
     if (!iter_->Valid()) {
       iter_->SeekToFirst();
     } else {
@@ -136,8 +166,13 @@ void DBIter::Next() {
       saved_key_.clear();
       return;
     }
+    // saved_key_ already contains the key to skip past.
   } else {
+    // Store in saved_key_ the current key so we skip it below.
     SaveKey(ExtractUserKey(iter_->key()), &saved_key_);
+
+    // iter_ is pointing to current key. We can now safely move to the next to
+    // avoid checking current key.
     iter_->Next();
     if (!iter_->Valid()) {
       valid_ = false;
@@ -145,10 +180,12 @@ void DBIter::Next() {
       return;
     }
   }
+
   FindNextUserEntry(true, &saved_key_);
 }
 
 void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
+  // Loop until we hit an acceptable entry to yield
   assert(iter_->Valid());
   assert(direction_ == kForward);
   do {
@@ -156,6 +193,8 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
     if (ParseKey(&ikey) && ikey.sequence <= sequence_) {
       switch (ikey.type) {
         case kTypeDeletion:
+          // Arrange to skip all upcoming entries for this key since
+          // they are hidden by this deletion.
           SaveKey(ikey.user_key, skip);
           skipping = true;
           break;
@@ -190,8 +229,11 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
 
 void DBIter::Prev() {
   assert(valid_);
-  if (direction_ == kForward) {
-    assert(iter_->Valid());
+
+  if (direction_ == kForward) {  // Switch directions?
+    // iter_ is pointing at the current entry.  Scan backwards until
+    // the key changes so we can use the normal reverse scanning code.
+    assert(iter_->Valid());  // Otherwise valid_ would have been false
     SaveKey(ExtractUserKey(iter_->key()), &saved_key_);
     while (true) {
       iter_->Prev();
@@ -208,11 +250,13 @@ void DBIter::Prev() {
     }
     direction_ = kReverse;
   }
+
   FindPrevUserEntry();
 }
 
 void DBIter::FindPrevUserEntry() {
   assert(direction_ == kReverse);
+
   ValueType value_type = kTypeDeletion;
   if (iter_->Valid()) {
     do {
@@ -220,6 +264,7 @@ void DBIter::FindPrevUserEntry() {
       if (ParseKey(&ikey) && ikey.sequence <= sequence_) {
         if ((value_type != kTypeDeletion) &&
             user_comparator_->Compare(ikey.user_key, saved_key_) < 0) {
+          // We encountered a non-deleted value in entries for previous keys,
           break;
         }
         value_type = ikey.type;
@@ -248,6 +293,7 @@ void DBIter::FindPrevUserEntry() {
   }
 
   if (value_type == kTypeDeletion) {
+    // End
     valid_ = false;
     saved_key_.clear();
     ClearSavedValue();
@@ -265,7 +311,7 @@ void DBIter::Seek(const Slice& target) {
                     ParsedInternalKey(target, sequence_, kValueTypeForSeek));
   iter_->Seek(saved_key_);
   if (iter_->Valid()) {
-    FindNextUserEntry(false, &saved_key_);
+    FindNextUserEntry(false, &saved_key_ /* temporary storage */);
   } else {
     valid_ = false;
   }
@@ -276,7 +322,7 @@ void DBIter::SeekToFirst() {
   ClearSavedValue();
   iter_->SeekToFirst();
   if (iter_->Valid()) {
-    FindNextUserEntry(false, &saved_key_);
+    FindNextUserEntry(false, &saved_key_ /* temporary storage */);
   } else {
     valid_ = false;
   }
