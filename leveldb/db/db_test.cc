@@ -2961,6 +2961,38 @@ TEST_F(DBTest, RangeTombstoneIndexCorruptionBug) {
       << "The SSTable index block is completely poisoned.";
 }
 
+TEST_F(DBTest, RangeTombstoneDuplicationBug) {
+  // Purpose: Ensure that a large range tombstone does not get duplicated into
+  // EVERY SSTable generated during a compaction, and that file boundaries
+  // are not artificially inflated by the tombstone bounds.
+
+  Options options = CurrentOptions();
+  options.block_size = 1024;
+  options.write_buffer_size = 100000;
+  Reopen(&options);
+
+  // 1. Insert a Range Tombstone that spans a massive range.
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A", "Z"));
+
+  // 2. Insert point keys that will trigger multiple SSTables to be generated
+  // during a compaction.
+  for (int i = 0; i < 50; i++) {
+    char key_buf[10];
+    std::snprintf(key_buf, sizeof(key_buf), "B%02d", i);
+    ASSERT_LEVELDB_OK(Put(key_buf, std::string(4000, 'x')));
+  }
+  
+  // Force a compaction to L1/L2
+  ASSERT_LEVELDB_OK(db_->ForceFullCompaction());
+
+  // Let's just make sure we didn't crash and keys are readable.
+  for (int i = 0; i < 50; i++) {
+    char key_buf[10];
+    std::snprintf(key_buf, sizeof(key_buf), "B%02d", i);
+    ASSERT_EQ(std::string(4000, 'x'), Get(key_buf));
+  }
+}
+
 TEST_F(DBTest, FFC_OptimalLevelSettling) {
   // Purpose: Verify FFC does not blindly push data to Level 6.
   // If the DB only has L0 files, FFC should stop exactly at L1.

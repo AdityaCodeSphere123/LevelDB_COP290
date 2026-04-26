@@ -571,10 +571,10 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   stats_[level].Add(stats);
 
   // If a ForceFullCompaction is in progress, record per compaction details
-  if (ffc_records_ != nullptr) {
+  if (ffc_records_ != nullptr && meta.file_size > 0) {
     SingleCompactionRecord rec;
     rec.input_files = 0;
-    rec.output_files = (meta.file_size > 0 ? 1 : 0);
+    rec.output_files = 1;
     rec.bytes_read = 0;
     rec.bytes_written = meta.file_size;
     ffc_records_->push_back(rec);
@@ -695,8 +695,13 @@ std::string StatsForCompaction::FormatBytes(int64_t bytes) const {
 void StatsForCompaction::Print() const {
   std::ostringstream out;
 
-  out << num_compactions << "; " << num_input_files << "; " << num_output_files
-      << "; " << bytes_read << "; " << bytes_written << std::endl;
+  out << "Number of compactions executed: " << num_compactions << std::endl;
+  out << "Number of input files: " << num_input_files << std::endl;
+  out << "Number of output files: " << num_output_files << std::endl;
+  out << "Total bytes read: " << FormatBytes(bytes_read) << std::endl;
+  out << "Total bytes written: " << FormatBytes(bytes_written) << std::endl;
+  out << "Elapsed time: " << elapsed_micros << " microseconds" << std::endl;
+
   const std::string report = out.str();
   std::fwrite(report.data(), 1, report.size(), stdout);
   std::fflush(stdout);
@@ -1157,21 +1162,23 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   auto dels = compaction_range_dels.GetDeletions();
   if (!dels.empty()) {
     std::sort(dels.begin(), dels.end(),
-              [](const RangeDeletion& a, const RangeDeletion& b) {
-                int cmp = a.start_key.compare(b.start_key);
+              [this](const RangeDeletion& a, const RangeDeletion& b) {
+                int cmp = user_comparator()->Compare(a.start_key, b.start_key);
                 if (cmp != 0) return cmp < 0;
                 return a.seq > b.seq;  // Descending sequence numbers
               });
 
     auto last =
         std::unique(dels.begin(), dels.end(),
-                    [](const RangeDeletion& a, const RangeDeletion& b) {
-                      return a.start_key == b.start_key && a.seq == b.seq;
+                    [this](const RangeDeletion& a, const RangeDeletion& b) {
+                      return user_comparator()->Compare(a.start_key, b.start_key) == 0 && a.seq == b.seq;
                     });
     dels.erase(last, dels.end());
   }
 
-  while (input->Valid() && !shutting_down_.load(std::memory_order_acquire)) {
+  size_t del_idx = 0;
+
+  while ((input->Valid() || del_idx < dels.size()) && !shutting_down_.load(std::memory_order_acquire)) {
     // Prioritize immutable compaction work
     if (has_imm_.load(std::memory_order_relaxed)) {
       const uint64_t imm_start = env_->NowMicros();
@@ -1185,13 +1192,58 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       imm_micros += (env_->NowMicros() - imm_start);
     }
 
-    Slice key = input->key();
+    bool is_tombstone_next = false;
+    InternalKey tombstone_ikey;
+    if (del_idx < dels.size()) {
+      tombstone_ikey = InternalKey(dels[del_idx].start_key, dels[del_idx].seq, kTypeRangeDeletion);
+      if (!input->Valid()) {
+        is_tombstone_next = true;
+      } else {
+        if (internal_comparator_.Compare(tombstone_ikey.Encode(), input->key()) <= 0) {
+          is_tombstone_next = true;
+        }
+      }
+    }
+
+    Slice key = is_tombstone_next ? tombstone_ikey.Encode() : input->key();
+
     if (compact->compaction->ShouldStopBefore(key) &&
         compact->builder != nullptr) {
       status = FinishCompactionOutputFile(compact, input);
       if (!status.ok()) {
         break;
       }
+    }
+
+    if (is_tombstone_next) {
+      const auto& del = dels[del_idx];
+      if (compact->builder == nullptr) {
+        status = OpenCompactionOutputFile(compact);
+        if (!status.ok()) {
+          break;
+        }
+      }
+
+      compact->builder->Add(tombstone_ikey.Encode(), del.end_key);
+
+      if (compact->current_output()->smallest.empty() ||
+          user_comparator()->Compare(del.start_key, compact->current_output()->smallest.user_key()) < 0) {
+        compact->current_output()->smallest = tombstone_ikey;
+      }
+      InternalKey end_ikey(del.end_key, 0, kTypeDeletion);
+      if (compact->current_output()->largest.empty() ||
+          user_comparator()->Compare(del.end_key, compact->current_output()->largest.user_key()) > 0) {
+        compact->current_output()->largest = end_ikey;
+      }
+
+      if (compact->builder->FileSize() >= compact->compaction->MaxOutputFileSize()) {
+        status = FinishCompactionOutputFile(compact, input);
+        if (!status.ok()) {
+          break;
+        }
+      }
+      del_idx++;
+      continue;
     }
 
     // Handle key/value, add to state, etc.
@@ -1225,15 +1277,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
       last_sequence_for_key = ikey.sequence;
     }
-#if 0
-    Log(options_.info_log,
-        "  Compact: %s, seq %d, type: %d %d, drop: %d, is_base: %d, "
-        "%d smallest_snapshot: %d",
-        ikey.user_key.ToString().c_str(),
-        (int)ikey.sequence, ikey.type, kTypeValue, drop,
-        compact->compaction->IsBaseLevelForKey(ikey.user_key),
-        (int)last_sequence_for_key, (int)compact->smallest_snapshot);
-#endif
 
     if (!drop) {
       // Open output file if necessary
@@ -1242,28 +1285,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         if (!status.ok()) {
           break;
         }
-
-        for (const auto& del : dels) {
-          InternalKey tombstone_key(del.start_key, del.seq, kTypeRangeDeletion);
-          compact->builder->Add(tombstone_key.Encode(), del.end_key);
-
-          if (compact->current_output()->smallest.empty() ||
-              user_comparator()->Compare(
-                  del.start_key,
-                  compact->current_output()->smallest.user_key()) < 0) {
-            compact->current_output()->smallest = tombstone_key;
-          }
-          InternalKey end_ikey(del.end_key, 0, kTypeDeletion);
-          if (compact->current_output()->largest.empty() ||
-              user_comparator()->Compare(
-                  del.end_key, compact->current_output()->largest.user_key()) >
-                  0) {
-            compact->current_output()->largest = end_ikey;
-          }
-        }
       }
 
-      const Slice key = input->key();
       if (compact->current_output()->smallest.empty() ||
           user_comparator()->Compare(
               ExtractUserKey(key),
