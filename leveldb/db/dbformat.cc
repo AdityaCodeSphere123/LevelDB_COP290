@@ -146,9 +146,15 @@ void RangeDeletionList::Add(const Slice& start, const Slice& end,
 bool RangeDeletionList::IsDeleted(const Slice& key, SequenceNumber found_seq,
                                   SequenceNumber read_seq, const Comparator* ucmp) const {
   std::lock_guard<std::mutex> lock(mutex_);
+  // We iterate through our known tombstones to see if any of them "cover" the
+  // requested key.
   for (const auto& del : deletions_) {
-    int start_cmp = ucmp ? ucmp->Compare(key, del.start_key) : key.compare(del.start_key);
-    int end_cmp = ucmp ? ucmp->Compare(key, del.end_key) : key.compare(del.end_key);
+    // Check if the key falls within [start_key, end_key)
+    int start_cmp =
+        ucmp ? ucmp->Compare(key, del.start_key) : key.compare(del.start_key);
+    int end_cmp =
+        ucmp ? ucmp->Compare(key, del.end_key) : key.compare(del.end_key);
+
     if (start_cmp >= 0 && end_cmp < 0) {
       if (del.seq <= read_seq && del.seq > found_seq) {
         return true;

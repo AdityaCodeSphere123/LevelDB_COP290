@@ -57,6 +57,7 @@ class InternalKey;
 enum ValueType {
   kTypeDeletion = 0x0,
   kTypeValue = 0x1,
+  // Range deletions (tombstones) cover a range of keys [start, end).
   kTypeRangeDeletion = 0x2
 };
 // kValueTypeForSeek defines the ValueType that should be passed when
@@ -227,20 +228,35 @@ class LookupKey {
 inline LookupKey::~LookupKey() {
   if (start_ != space_) delete[] start_;
 }
+// A simple container to keep track of range tombstones we've encountered
+// during reads or compactions. This helps us efficiently check if a 
+// specific key should be considered "deleted" by an active range tombstone.
 struct RangeDeletion {
   std::string start_key;
   std::string end_key;
   SequenceNumber seq;
 };
+
+// Manages a collection of range tombstones and provides a thread-safe way
+// to check if a key is within any of those ranges.
 class RangeDeletionList {
  public:
   RangeDeletionList() = default;
 
+  // Record a new range deletion.
   void Add(const Slice& start, const Slice& end, SequenceNumber seq);
+
+  // Checks if 'key' is covered by any tombstone in our list.
+  // We only care if the tombstone is "newer" than where the key was found 
+  // (found_seq) but "older" or equal to our current read snapshot (read_seq).
   bool IsDeleted(const Slice& key, SequenceNumber found_seq,
                  SequenceNumber read_seq,
                  const Comparator* ucmp = nullptr) const;
+
+  // Combine tombstones from another list into this one.
   void MergeInto(const RangeDeletionList* other);
+
+  // Get a copy of all current tombstones.
   std::vector<RangeDeletion> GetDeletions() const;
 
  private:

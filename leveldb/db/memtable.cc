@@ -101,6 +101,8 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
   assert(p + val_size == buf + encoded_len);
   table_.Insert(buf);
 
+  // If this is a range deletion, we add it to our in-memory list 
+  // so we can quickly check it during point lookups.
   if (type == kTypeRangeDeletion) {
     range_deletions_.Add(key, value, s);
   }
@@ -134,6 +136,9 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
       ValueType type = static_cast<ValueType>(tag & 0xff);
       SequenceNumber found_seq = tag >> 8;
 
+      // Before we return a value, we must check if this specific key 
+      // has been "range deleted" by a tombstone that is newer than 
+      // the key itself but older than our read snapshot.
       const Comparator* ucmp = comparator_.comparator.user_comparator();
       if (range_deletions_.IsDeleted(key.user_key(), found_seq, read_seq, ucmp)) {
         *s = Status::NotFound(Slice());

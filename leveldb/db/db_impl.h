@@ -66,6 +66,7 @@ class DBImpl : public DB {
   Status Scan(
       const ReadOptions& options, const Slice& start_key, const Slice& end_key,
       std::vector<std::pair<std::string, std::string>>* result) override;
+  // deletes all keys in the range [start_key, end_key).
   Status DeleteRange(const WriteOptions& options, const Slice& start_key,
                      const Slice& end_key) override;
 

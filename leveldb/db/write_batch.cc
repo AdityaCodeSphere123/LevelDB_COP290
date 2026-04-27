@@ -118,6 +118,8 @@ void WriteBatch::Delete(const Slice& key) {
   PutLengthPrefixedSlice(&rep_, key);
 }
 
+// DeleteRange deletes all keys in the range [start_key, end_key).
+// It writes a "range tombstone" that masks those keys during future reads.
 void WriteBatch::DeleteRange(const Slice& start_key, const Slice& end_key) {
   WriteBatchInternal::SetCount(this, WriteBatchInternal::Count(this) + 1);
   rep_.push_back(static_cast<char>(kTypeRangeDeletion));

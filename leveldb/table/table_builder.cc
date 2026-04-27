@@ -108,6 +108,8 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
     const uint64_t tag = DecodeFixed64(key.data() + n - 8);
     ValueType type = static_cast<ValueType>(tag & 0xff);
 
+    // If this is a range deletion, we store it in a separate block 
+    // dedicated to tombstones, rather than the normal data blocks.
     if (type == kTypeRangeDeletion) {
       r->range_del_block.Add(key, value);
       r->num_entries++;
@@ -259,6 +261,8 @@ Status TableBuilder::Finish() {
       meta_index_block.Add(key, handle_encoding);
     }
 
+    // If we have range tombstones, we add a special entry in the 
+    // metaindex block so that readers know where to find them.
     if (has_range_dels) {
       std::string key = "leveldb.range_deletions";
       std::string handle_encoding;

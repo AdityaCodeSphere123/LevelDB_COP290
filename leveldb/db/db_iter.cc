@@ -58,7 +58,8 @@ class DBIter : public Iterator {
         valid_(false),
         rnd_(seed),
         bytes_until_read_sampling_(RandomCompactionPeriod()) {
-    // Collect ALL tombstones across the entire DB upon creation
+    // We collect all range tombstones from across the database when 
+    // the iterator is created. 
     db_->GetRangeDeletions(&global_range_dels_);
   }
 
@@ -203,9 +204,10 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
           break;
 
         case kTypeValue:
+          // Check if this key has been deleted by a "range tombstone".
           if (global_range_dels_.IsDeleted(ikey.user_key, ikey.sequence,
                                            sequence_, user_comparator_)) {
-            // Shadowed by global Range Tombstone
+            // Shadowed by global Range Tombstone, so we keep looking.
           } else if (skipping &&
                      user_comparator_->Compare(ikey.user_key, *skip) <= 0) {
             // Shadowed by Point Tombstone
