@@ -28,6 +28,7 @@ class TableCache;
 class Version;
 class VersionEdit;
 class VersionSet;
+//aggregate statistics about Force Full Compaction 
 struct StatsForCompaction {
   StatsForCompaction()
       : num_compactions(0),
@@ -70,6 +71,8 @@ class DBImpl : public DB {
   Status DeleteRange(const WriteOptions& options, const Slice& start_key,
                      const Slice& end_key) override;
 
+  // Retrieves all active range tombstones from both the current memtables 
+  // and all on disk SSTables. 
   void GetRangeDeletions(RangeDeletionList* list);
   Iterator* NewIterator(const ReadOptions&) override;
   const Snapshot* GetSnapshot() override;
@@ -254,7 +257,7 @@ class DBImpl : public DB {
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
 
   // True while ForceFullCompaction() is running.
-  // Normal writes should wait, and unrelated automatic compactions should not
+  // Normal writes should wait, and unrelated compactions should not
   // be scheduled during this window.
   bool force_full_compaction_in_progress_ GUARDED_BY(mutex_);
 

@@ -2144,6 +2144,8 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
   }
   return result;
 }
+// Scans the entire database state (MemTables and all SSTable levels) 
+// to collect every active range tombstone.
 void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
   MutexLock l(&mutex_);
   if (mem_) {
@@ -2165,6 +2167,7 @@ void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
     }
   }
 }
+//check if a Force Full Compaction is currently running
 bool DBImpl::TEST_IsForceFullCompactionInProgress() {
   MutexLock l(&mutex_);
   return force_full_compaction_in_progress_;

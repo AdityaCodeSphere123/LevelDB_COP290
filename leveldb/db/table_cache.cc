@@ -127,9 +127,11 @@ void TableCache::GetRangeDeletions(uint64_t file_number, uint64_t file_size,
   if (s.ok()) {
     Table* table =
         reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+    // Retrieve the range tombstones stored in this SSTable.
     RangeDeletionList* table_dels = table->GetRangeDeletions();
 
     if (table_dels != nullptr) {
+      // Merge them into our collective list of deletions.
       dest_list->MergeInto(table_dels);
     }
 
