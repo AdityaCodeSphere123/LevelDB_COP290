@@ -3966,4 +3966,75 @@ TEST_F(FullCompactionTest, RangeTombstone_MiddleGapResurrectionBug) {
                               << "Data resurrected: " << val;
 }
 
+TEST_F(FullCompactionTest, RangeTombstone_GapAtSplitUserKey) {
+  // 1. Plant an old key in L2
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "F_zombie", "brains"));
+  db_->CompactRange(nullptr, nullptr);
+  db_->CompactRange(nullptr, nullptr);
+
+  // 2. Issue a tombstone [A, Z]
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+
+  // 3. Write data to force split at user key F
+  std::string heavy(1024 * 1024, 'x'); // 1MB
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "B_heavy1", heavy));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "B_heavy2", heavy));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "F_split", "point_data"));
+
+  // 4. Compact L0 -> L1
+  db_->CompactRange(nullptr, nullptr);
+
+  // 5. Query "F_zombie"
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "F_zombie", &val);
+  ASSERT_TRUE(s.IsNotFound()) << "Gap at split user key! Data resurrected: " << val;
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_NoFirstFileTruncation) {
+  // 1. Plant an old key "B" in L2
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "B_zombie", "brains"));
+  db_->CompactRange(nullptr, nullptr);
+  db_->CompactRange(nullptr, nullptr);
+
+  // 2. Issue a tombstone [A, Z]
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+
+  // 3. Write first point key "C"
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "C_point", "data"));
+
+  // 4. Compact L0 -> L1
+  db_->CompactRange(nullptr, nullptr);
+
+  // 5. Query "B_zombie"
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "B_zombie", &val);
+  ASSERT_TRUE(s.IsNotFound()) << "First file truncation! Data resurrected: " << val;
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_ThreeFileSpan) {
+  // 1. Plant keys across the alphabet in L2
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "C_zombie", "c"));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "M_zombie", "m"));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "W_zombie", "w"));
+  db_->CompactRange(nullptr, nullptr);
+  db_->CompactRange(nullptr, nullptr);
+
+  // 2. Issue tombstone [A, Z]
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "A_start", "Z_end"));
+
+  // 3. Write data to force 3 files
+  std::string heavy(1024 * 1024, 'x');
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "B_heavy", heavy));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "L_heavy", heavy));
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "V_heavy", heavy));
+
+  // 4. Compact L0 -> L1
+  db_->CompactRange(nullptr, nullptr);
+
+  // 5. Verify all zombies are dead
+  ASSERT_EQ("NOT_FOUND", Get("C_zombie"));
+  ASSERT_EQ("NOT_FOUND", Get("M_zombie"));
+  ASSERT_EQ("NOT_FOUND", Get("W_zombie"));
+}
+
 }  // namespace leveldb
