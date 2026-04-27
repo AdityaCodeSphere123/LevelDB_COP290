@@ -538,10 +538,10 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   // should not be added to the manifest.
   int level = 0;
   if (s.ok() && meta.file_size > 0) {
-    // When we flush a memtable to Level 0, we must ensure that the file's 
+    // When we flush a memtable to Level 0, we must ensure that the file's
     // metadata correctly reflects the range of keys it covers.
-    // If the memtable contains range tombstones, they might cover keys 
-    // outside the range of regular data points, so we expand the 
+    // If the memtable contains range tombstones, they might cover keys
+    // outside the range of regular data points, so we expand the
     // file's smallest/largest boundaries to include them.
     const RangeDeletionList* dels = mem->GetRangeDeletions();
     if (dels != nullptr) {
@@ -754,11 +754,11 @@ Status DBImpl::CompactWholeLevel(int level) {
 }
 
 Status DBImpl::ForceFullCompaction() {
-  //want to track how long this whole process takes
+  // want to track how long this whole process takes
   const uint64_t start_micros = env_->NowMicros();
   Status status;
 
-  // storing statistics for each individual compaction operation 
+  // storing statistics for each individual compaction operation
   // that happens during this full sweep.
   std::vector<SingleCompactionRecord> records;
   {
@@ -770,8 +770,8 @@ Status DBImpl::ForceFullCompaction() {
       background_work_finished_signal_.Wait();
     }
     force_full_compaction_in_progress_ = true;
-    
-    // Point the global records pointer to our local vector so background 
+
+    // Point the global records pointer to our local vector so background
     // compaction threads can report their stats to us.
     records_forcecompaction_ = &records;
   }
@@ -794,7 +794,7 @@ Status DBImpl::ForceFullCompaction() {
     }
   };
 
-  // Before we start moving files between levels, we need to make sure 
+  // Before we start moving files between levels, we need to make sure
   // everything in memory (MemTable) is flushed down to Level 0.
   // We do this BEFORE setting any strict lockdown flags to avoid deadlocks
   // with normal background maintenance tasks.
@@ -823,10 +823,30 @@ Status DBImpl::ForceFullCompaction() {
     }
   }
 
-  // The strategy here is a "waterfall": we compact Level 0 into Level 1,
-  // then Level 1 into Level 2, and so on. This ensures that all data
-  // eventually trickles down to the very bottom level (kNumLevels - 1).
-  for (int level = 0; level < config::kNumLevels - 1; level++) {
+  // First, find the highest level that currently has files. We only need to
+  // compact up to this level. Pushing data further down into empty levels
+  // provides no benefit and causes unnecessary I/O.
+  int max_level_with_files = 1;  // Vanilla LevelDB starts this at 1
+  {
+    MutexLock lock(&mutex_);
+    status = CheckDatabaseUsable();
+    if (!status.ok()) {
+      FinishFullCompaction();
+      return status;
+    }
+    // Match vanilla DBImpl::CompactRange by starting from level 1
+    for (int level = 1; level < config::kNumLevels; level++) {
+      if (versions_->NumLevelFiles(level) > 0) {
+        max_level_with_files = level;
+      }
+    }
+  }
+
+  // We loop strictly LESS THAN max_level_with_files, exactly mirroring
+  // vanilla DBImpl::CompactRange. This pulls all data down to merge with the
+  // deepest populated level, safely resolving tombstones without touching
+  // empty bottom levels.
+  for (int level = 0; level < max_level_with_files; level++) {
     {
       MutexLock lock(&mutex_);
       status = CheckDatabaseUsable();
@@ -846,7 +866,7 @@ Status DBImpl::ForceFullCompaction() {
       break;
     }
   }
-  
+
   // Cleanup the state and release the "lock".
   FinishFullCompaction();
 
@@ -1162,8 +1182,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
 
-  // We need to gather all range tombstones (deletions) from every file 
-  // involved in this compaction. These tombstones will be merged and 
+  // We need to gather all range tombstones (deletions) from every file
+  // involved in this compaction. These tombstones will be merged and
   // potentially written to the new output files.
   RangeDeletionList compaction_range_dels;
   for (int which = 0; which < 2; which++) {
@@ -1189,7 +1209,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   bool tombstones_injected = false;  // Used for zero-point-keys logic
 
   // To process tombstones efficiently, we sort them by their start key.
-  // If multiple tombstones start at the same key, the one with the higher 
+  // If multiple tombstones start at the same key, the one with the higher
   // sequence number (newer) comes first.
   auto dels = compaction_range_dels.GetDeletions();
   if (!dels.empty()) {
@@ -1210,7 +1230,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     dels.erase(last, dels.end());
   }
 
-  size_t del_idx = 0; // Pointer to the current range tombstone we're considering.
+  size_t del_idx =
+      0;  // Pointer to the current range tombstone we're considering.
 
   while ((input->Valid() || del_idx < dels.size()) &&
          !shutting_down_.load(std::memory_order_acquire)) {
@@ -1227,9 +1248,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       imm_micros += (env_->NowMicros() - imm_start);
     }
 
-    // We are merging two streams: 
-    // 1. Regular key-value pairs (from the iterator)
-    // 2. Range tombstones (from our sorted 'dels' vector)
+    // We are merging two streams
     bool is_tombstone_next = false;
     InternalKey tombstone_ikey;
     if (del_idx < dels.size()) {
@@ -1259,8 +1278,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
     if (is_tombstone_next) {
       const auto& del = dels[del_idx];
-      // When we start a new output file, we need to re-inject any range 
-      // tombstones that are still active so that the deletion coverage 
+      // When we start a new output file, we need to re-inject any range
+      // tombstones that are still active so that the deletion coverage
       // is maintained across file splits.
       if (compact->builder == nullptr) {
         status = OpenCompactionOutputFile(compact);
@@ -1334,12 +1353,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       has_current_user_key = false;
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
-      // Crucial part: check if this key has been "range deleted" by one of 
+      // Crucial part: check if this key has been "range deleted" by one of
       // the tombstones we gathered earlier.
       if (compaction_range_dels.IsDeleted(ikey.user_key, ikey.sequence,
                                           compact->smallest_snapshot,
                                           user_comparator())) {
-        drop = true; // Key is covered by a range tombstone, so we drop it.
+        drop = true;  // Key is covered by a range tombstone, so we drop it.
       } else if (!has_current_user_key ||
                  user_comparator()->Compare(ikey.user_key,
                                             Slice(current_user_key)) != 0) {
@@ -1689,9 +1708,10 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   }
 
   // We use a database iterator to walk through the keys.
-  // LevelDB's iterators handle merging data from memtables and all SST levels for us.
+  // LevelDB's iterators handle merging data from memtables and all SST levels
+  // for us.
   Iterator* it = this->NewIterator(options);
-  
+
   // Jump straight to the first key that is >= start_key.
   it->Seek(start_key);
 
@@ -1702,7 +1722,7 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
   }
 
   Status status = it->status();
-  delete it; // Clean up the iterator resources.
+  delete it;  // Clean up the iterator resources.
   return status;
 }
 
@@ -1717,7 +1737,7 @@ Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
   // This ensures that the deletion is atomic and gets written to the WAL first.
   WriteBatch batch;
   batch.DeleteRange(start_key, end_key);
-  
+
   // Hand it off to the standard Write path.
   return Write(options, &batch);
 }
@@ -1745,7 +1765,8 @@ Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
 }
-// Helper to ensure the database is in a state where we can safely perform operations.
+// Helper to ensure the database is in a state where we can safely perform
+// operations.
 Status DBImpl::CheckDatabaseUsable() const {
   // If we've hit a background error (like a disk failure), we should stop.
   if (bg_error_.ok() == false) {
@@ -1757,13 +1778,16 @@ Status DBImpl::CheckDatabaseUsable() const {
   }
   return Status::OK();
 }
-// Checks if a foreground operation (like a Scan) should wait for a full compaction to finish.
+// Checks if a foreground operation (like a Scan) should wait for a full
+// compaction to finish.
 bool DBImpl::ShouldWaitFullCompaction() const {
   const bool full_compaction_running = force_full_compaction_in_progress_;
   const bool database_healthy = (bg_error_.ok() == true);
-  const bool database_running = (shutting_down_.load(std::memory_order_acquire) == false);
-  
-  // We only wait if a compaction is actually running and the DB is otherwise healthy.
+  const bool database_running =
+      (shutting_down_.load(std::memory_order_acquire) == false);
+
+  // We only wait if a compaction is actually running and the DB is otherwise
+  // healthy.
   return full_compaction_running && database_healthy && database_running;
 }
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
@@ -2144,7 +2168,7 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
   }
   return result;
 }
-// Scans the entire database state (MemTables and all SSTable levels) 
+// Scans the entire database state (MemTables and all SSTable levels)
 // to collect every active range tombstone.
 void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
   MutexLock l(&mutex_);
@@ -2167,7 +2191,7 @@ void DBImpl::GetRangeDeletions(RangeDeletionList* list) {
     }
   }
 }
-//check if a Force Full Compaction is currently running
+// check if a Force Full Compaction is currently running
 bool DBImpl::TEST_IsForceFullCompactionInProgress() {
   MutexLock l(&mutex_);
   return force_full_compaction_in_progress_;
