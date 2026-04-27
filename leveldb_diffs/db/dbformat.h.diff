@@ -1,8 +1,10 @@
 --- leveldb_base/db/dbformat.h	2026-04-24 22:39:53
-+++ leveldb/db/dbformat.h	2026-04-26 07:35:09
-@@ -8,12 +8,14 @@
++++ leveldb/db/dbformat.h	2026-04-27 10:28:28
+@@ -7,13 +7,16 @@
+ 
  #include <cstddef>
  #include <cstdint>
++#include <mutex>
  #include <string>
 +#include <vector>
  
@@ -15,7 +17,7 @@
  #include "util/coding.h"
  #include "util/logging.h"
  
-@@ -51,14 +53,18 @@
+@@ -51,14 +54,18 @@
  // Value types encoded as the last component of internal keys.
  // DO NOT CHANGE THESE ENUM VALUES: they are embedded in the on-disk
  // data structures.
@@ -36,7 +38,7 @@
  
  typedef uint64_t SequenceNumber;
  
-@@ -160,6 +166,8 @@
+@@ -160,6 +167,8 @@
  
    void Clear() { rep_.clear(); }
  
@@ -45,7 +47,7 @@
    std::string DebugString() const;
  };
  
-@@ -177,7 +185,7 @@
+@@ -177,7 +186,7 @@
    result->sequence = num >> 8;
    result->type = static_cast<ValueType>(c);
    result->user_key = Slice(internal_key.data(), n - 8);
@@ -54,7 +56,7 @@
  }
  
  // A helper class useful for DBImpl::Get()
-@@ -218,7 +226,25 @@
+@@ -218,7 +227,27 @@
  inline LookupKey::~LookupKey() {
    if (start_ != space_) delete[] start_;
  }
@@ -69,12 +71,14 @@
  
 +  void Add(const Slice& start, const Slice& end, SequenceNumber seq);
 +  bool IsDeleted(const Slice& key, SequenceNumber found_seq,
-+                 SequenceNumber read_seq) const;
++                 SequenceNumber read_seq,
++                 const Comparator* ucmp = nullptr) const;
 +  void MergeInto(const RangeDeletionList* other);
-+  const std::vector<RangeDeletion>& GetDeletions() const;
++  std::vector<RangeDeletion> GetDeletions() const;
 +
 + private:
 +  std::vector<RangeDeletion> deletions_;
++  mutable std::mutex mutex_;
 +};
 +
  }  // namespace leveldb

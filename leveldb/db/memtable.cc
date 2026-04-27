@@ -134,7 +134,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
       ValueType type = static_cast<ValueType>(tag & 0xff);
       SequenceNumber found_seq = tag >> 8;
 
-      if (range_deletions_.IsDeleted(key.user_key(), found_seq, read_seq)) {
+      const Comparator* ucmp = comparator_.comparator.user_comparator();
+      if (range_deletions_.IsDeleted(key.user_key(), found_seq, read_seq, ucmp)) {
         *s = Status::NotFound(Slice());
         return true;
       }
@@ -157,7 +158,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
     }
   }
 
-  if (range_deletions_.IsDeleted(key.user_key(), 0, read_seq)) {
+  const Comparator* ucmp = comparator_.comparator.user_comparator();
+  if (range_deletions_.IsDeleted(key.user_key(), 0, read_seq, ucmp)) {
     *s = Status::NotFound(Slice());
     return true;
   }

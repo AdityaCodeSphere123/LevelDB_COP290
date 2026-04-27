@@ -3835,29 +3835,6 @@ TEST_F(FullCompactionTest, RangeTombstone_FragmentationAcrossSSTableBoundary) {
       << "Zombie data resurrected: " << value;
 }
 
-TEST_F(FullCompactionTest, RangeTombstone_EmptyFileBug) {
-  // 1. Plant data in a lower level (L2)
-  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "target_key", "old_value"));
-  db_->CompactRange(nullptr, nullptr);  // L0 -> L1
-  db_->CompactRange(nullptr, nullptr);  // L1 -> L2
-
-  // 2. Issue a Range Tombstone with NO point keys
-  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "a_start", "z_end"));
-
-  // 3. Compact L0 -> L1.
-  // If the Empty File Bug exists, this compaction will drop the tombstone
-  // entirely.
-  db_->CompactRange(nullptr, nullptr);
-
-  // 4. Verify tombstone survived and shadows the L2 data
-  std::string val;
-  Status s = db_->Get(ReadOptions(), "target_key", &val);
-
-  ASSERT_TRUE(s.IsNotFound())
-      << "FATAL BUG: Tombstone was discarded because there were no point keys. "
-      << "Data resurrected: " << val;
-}
-
 TEST_F(FullCompactionTest, RangeTombstone_TombstoneTailBug) {
   // 1. Plant data at the "tail" end of the target range in L2
   ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "Y_tail_key", "old_tail_data"));
@@ -3934,6 +3911,29 @@ TEST_F(FullCompactionTest, RangeTombstone_LeftBoundaryTruncationBug) {
   ASSERT_TRUE(s.IsNotFound()) << "Left Boundary Truncation Bug! Tombstone lost "
                                  "its front half. Zombie data resurrected: "
                               << val;
+}
+
+TEST_F(FullCompactionTest, RangeTombstone_EmptyFileBug) {
+  // 1. Plant data in a lower level (L2)
+  ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), "target_key", "old_value"));
+  db_->CompactRange(nullptr, nullptr);  // L0 -> L1
+  db_->CompactRange(nullptr, nullptr);  // L1 -> L2
+
+  // 2. Issue a Range Tombstone with NO point keys
+  ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), "a_start", "z_end"));
+
+  // 3. Compact L0 -> L1.
+  // If the Empty File Bug exists, this compaction will drop the tombstone
+  // entirely.
+  db_->CompactRange(nullptr, nullptr);
+
+  // 4. Verify tombstone survived and shadows the L2 data
+  std::string val;
+  Status s = db_->Get(ReadOptions(), "target_key", &val);
+
+  ASSERT_TRUE(s.IsNotFound())
+      << "FATAL BUG: Tombstone was discarded because there were no point keys. "
+      << "Data resurrected: " << val;
 }
 
 TEST_F(FullCompactionTest, RangeTombstone_MiddleGapResurrectionBug) {

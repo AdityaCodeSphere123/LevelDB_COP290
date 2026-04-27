@@ -4,6 +4,7 @@
 DIR_BASE="leveldb_base"
 DIR_NEW="leveldb"
 OUT_DIR="leveldb_diffs"
+MASTER_DIFF="$OUT_DIR/all_changes.diff" # Added: define the master diff file
 
 # Clean up any previous run and create the output directory
 rm -rf "$OUT_DIR"
@@ -29,9 +30,13 @@ find "$DIR_BASE" -type f \( -name "*.cc" -o -name "*.h" -o -name "*.c" -o -name 
             
             # Generate the diff and save it with a .diff extension
             diff -u "$BASE_FILE" "$NEW_FILE" > "$OUT_DIR/$REL_PATH.diff"
+            
+            # Added: Append the newly created diff to the master file
+            cat "$OUT_DIR/$REL_PATH.diff" >> "$MASTER_DIFF"
+            
             echo "Diff found and saved: $REL_PATH"
         fi
     fi
 done
 
-echo "Done! Check the '$OUT_DIR' folder for the results."
+echo "Done! Individual diffs are in '$OUT_DIR', and the concatenated diff is at '$MASTER_DIFF'."

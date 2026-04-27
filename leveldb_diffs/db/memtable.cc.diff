@@ -1,5 +1,5 @@
 --- leveldb_base/db/memtable.cc	2026-04-24 22:39:53
-+++ leveldb/db/memtable.cc	2026-04-26 07:35:22
++++ leveldb/db/memtable.cc	2026-04-27 10:05:15
 @@ -3,10 +3,13 @@
  // found in the LICENSE file. See the AUTHORS file for names of contributors.
  
@@ -37,7 +37,7 @@
      // entry format is:
      //    klength  varint32
      //    userkey  char[klength]
-@@ -120,7 +131,15 @@
+@@ -120,7 +131,16 @@
              Slice(key_ptr, key_length - 8), key.user_key()) == 0) {
        // Correct user key
        const uint64_t tag = DecodeFixed64(key_ptr + key_length - 8);
@@ -45,7 +45,8 @@
 +      ValueType type = static_cast<ValueType>(tag & 0xff);
 +      SequenceNumber found_seq = tag >> 8;
 +
-+      if (range_deletions_.IsDeleted(key.user_key(), found_seq, read_seq)) {
++      const Comparator* ucmp = comparator_.comparator.user_comparator();
++      if (range_deletions_.IsDeleted(key.user_key(), found_seq, read_seq, ucmp)) {
 +        *s = Status::NotFound(Slice());
 +        return true;
 +      }
@@ -54,7 +55,7 @@
          case kTypeValue: {
            Slice v = GetLengthPrefixedSlice(key_ptr + key_length);
            value->assign(v.data(), v.size());
-@@ -129,9 +148,20 @@
+@@ -129,9 +149,21 @@
          case kTypeDeletion:
            *s = Status::NotFound(Slice());
            return true;
@@ -67,7 +68,8 @@
      }
    }
 +
-+  if (range_deletions_.IsDeleted(key.user_key(), 0, read_seq)) {
++  const Comparator* ucmp = comparator_.comparator.user_comparator();
++  if (range_deletions_.IsDeleted(key.user_key(), 0, read_seq, ucmp)) {
 +    *s = Status::NotFound(Slice());
 +    return true;
 +  }

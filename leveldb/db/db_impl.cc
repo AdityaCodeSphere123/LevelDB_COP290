@@ -551,8 +551,7 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
         if (meta.largest.empty() ||
             user_comparator()->Compare(del.end_key, meta.largest.user_key()) >
                 0) {
-          meta.largest =
-              InternalKey(del.end_key, del.seq, kTypeRangeDeletion);
+          meta.largest = InternalKey(del.end_key, del.seq, kTypeRangeDeletion);
         }
       }
     }
@@ -1237,15 +1236,19 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
                                          ExtractUserKey(key)) > 0) {
             std::string start_ukey;
             if (compact->outputs.size() >= 2) {
-              start_ukey = compact->outputs[compact->outputs.size() - 2].largest.user_key().ToString();
+              start_ukey = compact->outputs[compact->outputs.size() - 2]
+                               .largest.user_key()
+                               .ToString();
               start_ukey.push_back('\x00');
             } else {
               start_ukey = ExtractUserKey(key).ToString();
             }
-            if (user_comparator()->Compare(active_del.start_key, start_ukey) > 0) {
+            if (user_comparator()->Compare(active_del.start_key, start_ukey) >
+                0) {
               start_ukey = active_del.start_key;
             }
-            InternalKey active_tkey(start_ukey, active_del.seq, kTypeRangeDeletion);
+            InternalKey active_tkey(start_ukey, active_del.seq,
+                                    kTypeRangeDeletion);
             compact->builder->Add(active_tkey.Encode(), active_del.end_key);
             if (compact->current_output()->smallest.empty()) {
               compact->current_output()->smallest = active_tkey;
@@ -1295,7 +1298,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
       if (compaction_range_dels.IsDeleted(ikey.user_key, ikey.sequence,
-                                          compact->smallest_snapshot)) {
+                                          compact->smallest_snapshot,
+                                          user_comparator())) {
         drop = true;
       } else if (!has_current_user_key ||
                  user_comparator()->Compare(ikey.user_key,
@@ -1344,18 +1348,23 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         }
         for (size_t i = 0; i < del_idx; i++) {
           const auto& active_del = dels[i];
-          if (user_comparator()->Compare(active_del.end_key, ExtractUserKey(key)) > 0) {
+          if (user_comparator()->Compare(active_del.end_key,
+                                         ExtractUserKey(key)) > 0) {
             std::string start_ukey;
             if (compact->outputs.size() >= 2) {
-              start_ukey = compact->outputs[compact->outputs.size() - 2].largest.user_key().ToString();
+              start_ukey = compact->outputs[compact->outputs.size() - 2]
+                               .largest.user_key()
+                               .ToString();
               start_ukey.push_back('\x00');
             } else {
               start_ukey = ExtractUserKey(key).ToString();
             }
-            if (user_comparator()->Compare(active_del.start_key, start_ukey) > 0) {
+            if (user_comparator()->Compare(active_del.start_key, start_ukey) >
+                0) {
               start_ukey = active_del.start_key;
             }
-            InternalKey active_tkey(start_ukey, active_del.seq, kTypeRangeDeletion);
+            InternalKey active_tkey(start_ukey, active_del.seq,
+                                    kTypeRangeDeletion);
             compact->builder->Add(active_tkey.Encode(), active_del.end_key);
             if (compact->current_output()->smallest.empty()) {
               compact->current_output()->smallest = active_tkey;
@@ -1403,9 +1412,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   }
   if (status.ok() && compact->builder != nullptr) {
     for (size_t i = 0; i < del_idx; i++) {
-       if (user_comparator()->Compare(dels[i].end_key, compact->current_output()->largest.user_key()) > 0) {
-           compact->current_output()->largest = InternalKey(dels[i].end_key, dels[i].seq, kTypeRangeDeletion);
-       }
+      if (user_comparator()->Compare(
+              dels[i].end_key, compact->current_output()->largest.user_key()) >
+          0) {
+        compact->current_output()->largest =
+            InternalKey(dels[i].end_key, dels[i].seq, kTypeRangeDeletion);
+      }
     }
     status = FinishCompactionOutputFile(compact, input);
   }
@@ -1547,9 +1559,8 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
     background_work_finished_signal_.Wait();
   }
   // If we woke up because of an error or shutdown, abort the read
-  Status usable_status = CheckDatabaseUsable();
-  if (usable_status.ok() == false) {
-    return usable_status;
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    return Status::IOError("Database is shutting down");
   }
 
   SequenceNumber snapshot;
@@ -1602,9 +1613,8 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
       background_work_finished_signal_.Wait();
     }
 
-    Status usable_status = CheckDatabaseUsable();
-    if (!usable_status.ok()) {
-      return NewEmptyIterator();
+    if (shutting_down_.load(std::memory_order_acquire)) {
+      return NewErrorIterator(Status::IOError("Database is shutting down"));
     }
   }
   SequenceNumber latest_snapshot;
@@ -1626,9 +1636,8 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
     while (ShouldWaitFullCompaction()) {
       background_work_finished_signal_.Wait();
     }
-    Status usable_status = CheckDatabaseUsable();
-    if (!usable_status.ok()) {
-      return usable_status;
+    if (shutting_down_.load(std::memory_order_acquire)) {
+      return Status::IOError("Database is shutting down");
     }
   }
   result->clear();
@@ -1648,7 +1657,7 @@ Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
 
 Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
                            const Slice& end_key) {
-  if (start_key.compare(end_key) >= 0) {
+  if (user_comparator()->Compare(start_key, end_key) >= 0) {
     return Status::OK();
   }
   WriteBatch batch;

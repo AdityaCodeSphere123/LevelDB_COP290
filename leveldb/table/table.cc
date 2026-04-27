@@ -275,7 +275,8 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
 
       if (block_iter->Valid()) {
         Slice found_user_key = ExtractUserKey(block_iter->key());
-        if (found_user_key == user_key) {
+        const Comparator* ucmp = static_cast<const InternalKeyComparator*>(rep_->options.comparator)->user_comparator();
+        if (ucmp->Compare(found_user_key, user_key) == 0) {
           point_key_found = true;
           const uint64_t tag = DecodeFixed64(block_iter->key().data() +
                                              block_iter->key().size() - 8);
@@ -284,7 +285,7 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
           bool deleted = false;
           if (rep_->range_deletions != nullptr) {
             deleted = rep_->range_deletions->IsDeleted(found_user_key,
-                                                       found_seq, read_seq);
+                                                       found_seq, read_seq, ucmp);
           }
 
           if (!deleted) {
@@ -305,8 +306,9 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
 
   // check if the requested key is shadowed by a range tombstone in this file!
   if (!point_key_found && s.ok()) {
+    const Comparator* ucmp = static_cast<const InternalKeyComparator*>(rep_->options.comparator)->user_comparator();
     if (rep_->range_deletions != nullptr &&
-        rep_->range_deletions->IsDeleted(user_key, 0, read_seq)) {
+        rep_->range_deletions->IsDeleted(user_key, 0, read_seq, ucmp)) {
       s = Status::NotFound(Slice());
     }
   }

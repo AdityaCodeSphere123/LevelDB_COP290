@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -237,12 +238,14 @@ class RangeDeletionList {
 
   void Add(const Slice& start, const Slice& end, SequenceNumber seq);
   bool IsDeleted(const Slice& key, SequenceNumber found_seq,
-                 SequenceNumber read_seq) const;
+                 SequenceNumber read_seq,
+                 const Comparator* ucmp = nullptr) const;
   void MergeInto(const RangeDeletionList* other);
-  const std::vector<RangeDeletion>& GetDeletions() const;
+  std::vector<RangeDeletion> GetDeletions() const;
 
  private:
   std::vector<RangeDeletion> deletions_;
+  mutable std::mutex mutex_;
 };
 
 }  // namespace leveldb

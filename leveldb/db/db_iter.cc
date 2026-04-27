@@ -7,6 +7,7 @@
 #include "db/db_impl.h"
 #include "db/dbformat.h"
 #include "db/filename.h"
+#include <cstdio>
 
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
@@ -15,8 +16,6 @@
 #include "util/logging.h"
 #include "util/mutexlock.h"
 #include "util/random.h"
-
-#include <cstdio>
 
 namespace leveldb {
 
@@ -205,7 +204,7 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
 
         case kTypeValue:
           if (global_range_dels_.IsDeleted(ikey.user_key, ikey.sequence,
-                                           sequence_)) {
+                                           sequence_, user_comparator_)) {
             // Shadowed by global Range Tombstone
           } else if (skipping &&
                      user_comparator_->Compare(ikey.user_key, *skip) <= 0) {
@@ -271,7 +270,7 @@ void DBIter::FindPrevUserEntry() {
 
         // Check if shadowed by global Range Tombstone
         if (global_range_dels_.IsDeleted(ikey.user_key, ikey.sequence,
-                                         sequence_)) {
+                                         sequence_, user_comparator_)) {
           value_type = kTypeDeletion;  // Treat exactly like point deletion
         }
 

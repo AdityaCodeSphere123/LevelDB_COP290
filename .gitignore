@@ -5,6 +5,7 @@ tester1
 *.so
 *.dylib
 
+leveldb/COP290-A3-CHECKER
 *.out
 *.exe
 *.app

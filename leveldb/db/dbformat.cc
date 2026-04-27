@@ -135,6 +135,7 @@ LookupKey::LookupKey(const Slice& user_key, SequenceNumber s) {
 
 void RangeDeletionList::Add(const Slice& start, const Slice& end,
                             SequenceNumber seq) {
+  std::lock_guard<std::mutex> lock(mutex_);
   RangeDeletion del;
   del.start_key = start.ToString();
   del.end_key = end.ToString();
@@ -143,9 +144,12 @@ void RangeDeletionList::Add(const Slice& start, const Slice& end,
 }
 
 bool RangeDeletionList::IsDeleted(const Slice& key, SequenceNumber found_seq,
-                                  SequenceNumber read_seq) const {
+                                  SequenceNumber read_seq, const Comparator* ucmp) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   for (const auto& del : deletions_) {
-    if (key.compare(del.start_key) >= 0 && key.compare(del.end_key) < 0) {
+    int start_cmp = ucmp ? ucmp->Compare(key, del.start_key) : key.compare(del.start_key);
+    int end_cmp = ucmp ? ucmp->Compare(key, del.end_key) : key.compare(del.end_key);
+    if (start_cmp >= 0 && end_cmp < 0) {
       if (del.seq <= read_seq && del.seq > found_seq) {
         return true;
       }
@@ -155,15 +159,18 @@ bool RangeDeletionList::IsDeleted(const Slice& key, SequenceNumber found_seq,
 }
 
 void RangeDeletionList::MergeInto(const RangeDeletionList* other) {
-  if (other == nullptr) {
+  if (other == nullptr || this == other) {
     return;
   }
+  std::lock_guard<std::mutex> lock_other(other->mutex_);
+  std::lock_guard<std::mutex> lock_this(mutex_);
 
   deletions_.insert(deletions_.end(), other->deletions_.begin(),
                     other->deletions_.end());
 }
 
-const std::vector<RangeDeletion>& RangeDeletionList::GetDeletions() const {
+std::vector<RangeDeletion> RangeDeletionList::GetDeletions() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   return deletions_;
 }
 
